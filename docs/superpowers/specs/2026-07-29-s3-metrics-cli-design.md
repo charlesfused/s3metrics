@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Status:** Approved
-**Module:** `github.com/csb1582/s3metrics`
+**Module:** `github.com/charlesfused/s3metrics`
 **Go:** 1.22
 
 ## 1. Purpose
@@ -336,7 +336,7 @@ with a clear message rather than "updating" a binary whose version it cannot rea
 about.
 
 **Release source.** `https://api.github.com/repos/{owner}/{repo}/releases/latest`,
-defaulting to `csb1582/s3metrics` and overridable at runtime via the
+defaulting to `charlesfused/s3metrics` and overridable at runtime via the
 `S3METRICS_UPDATE_REPO` environment variable (`owner/repo` form). Requests carry a
 10s timeout and an explicit `User-Agent` — GitHub rejects requests without one — and
 honour `GITHUB_TOKEN` when set, lifting the 60/hr anonymous rate limit. Versions are
