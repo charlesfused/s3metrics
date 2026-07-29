@@ -1,0 +1,12 @@
+# Build output
+/s3metrics
+/dist/
+
+# Test artifacts
+*.out
+*.test
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
