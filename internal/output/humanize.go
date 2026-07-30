@@ -1,6 +1,9 @@
 package output
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // humanBytes renders a byte count in binary units for the table format only.
 // JSON and CSV always carry raw integers — a machine-readable format must not
@@ -10,10 +13,21 @@ func humanBytes(n int64) string {
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
+
+	units := "KMGTPE"
+	value, exp := float64(n)/unit, 0
+	for value >= unit && exp < len(units)-1 {
+		value /= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+
+	// %.1f rounds, so a value just under the next boundary (1023.999) would
+	// print as "1024.0 KiB" — a reading that cannot exist. Promote it to the
+	// next unit instead, matching what the rounded number actually means.
+	if math.Round(value*10)/10 >= unit && exp < len(units)-1 {
+		value /= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f %ciB", value, units[exp])
 }

@@ -2,11 +2,13 @@ package output
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/charlesfused/s3metrics/internal/errs"
 	"github.com/charlesfused/s3metrics/internal/metrics"
 )
 
@@ -94,8 +96,17 @@ func TestRenderGolden(t *testing.T) {
 }
 
 func TestNewRejectsUnknownFormat(t *testing.T) {
-	if _, err := New("yaml", false); err == nil {
+	_, err := New("yaml", false)
+	if err == nil {
 		t.Fatal("New(\"yaml\") error = nil, want a usage error")
+	}
+
+	var e *errs.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("New(\"yaml\") error = %T, want *errs.Error", err)
+	}
+	if e.Code != errs.CodeUsage {
+		t.Errorf("error code = %s, want %s", e.Code, errs.CodeUsage)
 	}
 }
 
