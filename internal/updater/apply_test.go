@@ -124,6 +124,37 @@ func TestApplyHappyPath(t *testing.T) {
 	}
 }
 
+func TestApplySetsExecutableBit(t *testing.T) {
+	archiveName := AssetName("v1.2.0")
+	archive, sum := buildArchive(t, "s3metrics", "NEW BINARY")
+	srv := updateServer(t, "v1.2.0", archiveName, archive, sum, false)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "v1.0.0"
+
+	rel, err := c.Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest() error = %v", err)
+	}
+
+	exe := installFakeBinary(t)
+	if err := c.Apply(context.Background(), rel, exe); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	info, err := os.Stat(exe)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// CreateTemp makes files 0600, so without the explicit chmod the installed
+	// binary would not be executable.
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("installed mode = %v, want the executable bit set", info.Mode().Perm())
+	}
+}
+
 func TestApplyChecksumMismatchLeavesBinaryUntouched(t *testing.T) {
 	archiveName := AssetName("v1.2.0")
 	archive, sum := buildArchive(t, "s3metrics", "MALICIOUS")

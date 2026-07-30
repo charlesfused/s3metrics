@@ -113,17 +113,34 @@ func (c *Client) Apply(ctx context.Context, rel *Release, exePath string) error 
 		return err
 	}
 
-	extracted := filepath.Join(dir, ".s3metrics-new")
-	// Registered before extraction runs, not after: if extractBinary fails
-	// partway through writing extracted (e.g. a truncated tar entry), the
-	// partial file must still be cleaned up. Harmless no-op if extraction
-	// never created the file, or if replaceBinary already renamed it away.
-	defer os.Remove(extracted)
+	// CreateTemp rather than a fixed name: it opens with O_EXCL and a random
+	// suffix, so a symlink pre-planted at a predictable path in the install
+	// directory cannot be followed. Same directory as the target so the rename
+	// below stays on one filesystem.
+	extracted, err := os.CreateTemp(dir, ".s3metrics-new-*")
+	if err != nil {
+		return errs.Wrap(err, errs.CodeUpdateFailed,
+			"could not create a staging file in "+dir,
+			"re-run with sudo, or install to a directory you own")
+	}
+	extractedPath := extracted.Name()
+	defer func() {
+		extracted.Close()
+		os.Remove(extractedPath)
+	}()
+
 	if err := extractBinary(tmpPath, extracted); err != nil {
 		return err
 	}
+	if err := extracted.Close(); err != nil {
+		return errs.Wrap(err, errs.CodeUpdateFailed, "could not finish writing the new binary", "")
+	}
+	// CreateTemp makes the file 0600; the installed binary must be executable.
+	if err := os.Chmod(extractedPath, 0o755); err != nil {
+		return errs.Wrap(err, errs.CodeUpdateFailed, "could not mark the new binary executable", "")
+	}
 
-	return replaceBinary(extracted, exePath)
+	return replaceBinary(extractedPath, exePath)
 }
 
 // download streams url into w, returning the SHA256 of what was written.
@@ -195,8 +212,10 @@ func ParseChecksums(r io.Reader) map[string]string {
 	return out
 }
 
-// extractBinary pulls the s3metrics executable out of a gzipped tar.
-func extractBinary(archivePath, destPath string) error {
+// extractBinary pulls the s3metrics executable out of a gzipped tar and writes
+// it into dest. It takes an open file rather than a path so no second
+// open-by-name is needed — the caller creates dest exclusively.
+func extractBinary(archivePath string, dest *os.File) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return errs.Wrap(err, errs.CodeUpdateFailed, "could not open the downloaded archive", "")
@@ -227,18 +246,10 @@ func extractBinary(archivePath, destPath string) error {
 		if filepath.Base(hdr.Name) != wantName || hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-
-		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-		if err != nil {
-			return errs.Wrap(err, errs.CodeUpdateFailed,
-				"could not write the new binary", "check permissions on the install directory")
-		}
-		defer out.Close()
-
-		if _, err := io.Copy(out, io.LimitReader(tr, maxArchiveBytes)); err != nil {
+		if _, err := io.Copy(dest, io.LimitReader(tr, maxArchiveBytes)); err != nil {
 			return errs.Wrap(err, errs.CodeUpdateFailed, "could not extract the new binary", "")
 		}
-		return out.Close()
+		return nil
 	}
 }
 
@@ -257,8 +268,17 @@ func replaceBinary(newPath, exePath string) error {
 				"re-run with Administrator privileges, or close other instances")
 		}
 		if err := os.Rename(newPath, exePath); err != nil {
-			os.Rename(old, exePath) // put it back
-			return errs.Wrap(err, errs.CodeUpdateFailed, "could not install the new binary", "")
+			// The install failed. Try to put the original back, and if even that
+			// fails, say plainly where it is — otherwise the user is left with no
+			// binary and no idea the backup exists.
+			if restoreErr := os.Rename(old, exePath); restoreErr != nil {
+				return errs.Wrap(err, errs.CodeUpdateFailed,
+					"could not install the new binary, and the original could not be restored",
+					"your original binary is preserved at "+old+" — rename it back to "+exePath)
+			}
+			return errs.Wrap(err, errs.CodeUpdateFailed,
+				"could not install the new binary",
+				"the original binary was restored and is unchanged")
 		}
 		os.Remove(old) // best effort; Windows may hold the running image open
 		return nil
