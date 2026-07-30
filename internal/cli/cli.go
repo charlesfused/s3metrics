@@ -35,6 +35,10 @@ type Config struct {
 	Timeout     time.Duration
 	NoHeader    bool
 
+	// IncludeVersions makes a walk count noncurrent versions and delete markers
+	// as well as current objects, which is what metrics mode already counts.
+	IncludeVersions bool
+
 	CheckUpdate   bool
 	SelfUpdate    bool
 	NoUpdateCheck bool
@@ -77,6 +81,8 @@ func Parse(args []string, out io.Writer) (*Config, error) {
 	fs.StringVar(&c.Format, "format", output.FormatJSON, "output format: json, csv, or table")
 	fs.StringVar(&c.Prefix, "prefix", "", "limit a walk to this key prefix (walk mode only)")
 	fs.IntVar(&c.Concurrency, "concurrency", 8, "parallel shard walkers (walk mode only)")
+	fs.BoolVar(&c.IncludeVersions, "include-versions", false,
+		"count noncurrent versions and delete markers too (walk mode only)")
 	fs.DurationVar(&c.Timeout, "timeout", 0, "ceiling on the whole run, e.g. 5m (default: none)")
 	fs.BoolVar(&c.NoHeader, "no-header", false, "omit the CSV header row (csv format only)")
 	fs.BoolVar(&c.CheckUpdate, "check-update", false, "report whether a newer release exists, then exit")
@@ -150,7 +156,10 @@ func (c *Config) validate(set map[string]bool, positional []string) error {
 	}
 
 	if c.Mode == ModeMetrics {
-		for _, f := range []string{"prefix", "concurrency"} {
+		// --include-versions belongs here rather than being quietly accepted:
+		// CloudWatch's NumberOfObjects already counts every version and delete
+		// marker, so the switch asks metrics mode for something it cannot change.
+		for _, f := range []string{"prefix", "concurrency", "include-versions"} {
 			if set[f] {
 				return errs.New(errs.CodeUsage,
 					"--"+f+" applies to walk mode only",
@@ -198,10 +207,18 @@ Modes:
   walk     list every object and compute the totals directly. Exact and current,
            but costs one LIST request per 1000 objects. Requires s3:ListBucket.
 
+On a versioned bucket the two modes count different things: CloudWatch counts
+noncurrent versions and delete markers, a plain listing does not. Add
+--include-versions to make a walk count them too and the two comparable.
+
 Required IAM permissions:
   s3:GetBucketLocation                              (both modes)
   s3:ListBucket                                     (walk mode)
+  s3:ListBucketVersions                             (walk mode, --include-versions)
   cloudwatch:ListMetrics, cloudwatch:GetMetricData  (metrics mode)
+  s3:GetBucketVersioning                            (optional; reports the
+                                                     versioned field, and is
+                                                     skipped silently if denied)
 
 Exit codes:
   0 success    3 no credentials     6 bucket not found   9 network

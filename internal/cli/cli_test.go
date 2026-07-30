@@ -53,10 +53,13 @@ func TestParseWalkFlags(t *testing.T) {
 	c, err := Parse([]string{
 		"--bucket", "b", "--mode", "walk",
 		"--prefix", "data/", "--concurrency", "16",
-		"--timeout", "5m",
+		"--timeout", "5m", "--include-versions",
 	}, io.Discard)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
+	}
+	if !c.IncludeVersions {
+		t.Error("IncludeVersions = false, want true")
 	}
 	if c.Prefix != "data/" {
 		t.Errorf("Prefix = %q", c.Prefix)
@@ -77,6 +80,10 @@ func TestParseRejections(t *testing.T) {
 		{"missing bucket", []string{}},
 		{"prefix with metrics mode", []string{"--bucket", "b", "--prefix", "data/"}},
 		{"concurrency with metrics mode", []string{"--bucket", "b", "--concurrency", "4"}},
+		// CloudWatch already counts every version and delete marker, so asking
+		// metrics mode to include them is a request it cannot act on. Rejected
+		// rather than ignored, like every other walk-only switch.
+		{"include-versions with metrics mode", []string{"--bucket", "b", "--include-versions"}},
 		{"no-header with json", []string{"--bucket", "b", "--no-header"}},
 		{"no-header with table", []string{"--bucket", "b", "--format", "table", "--no-header"}},
 		{"zero concurrency", []string{"--bucket", "b", "--mode", "walk", "--concurrency", "0"}},
@@ -126,6 +133,8 @@ func TestParseHelpReturnsErrHelpAndPrintsBanner(t *testing.T) {
 		// A flag's own PrintDefaults line, not just the static banner text —
 		// this is what catches the switch list silently going missing.
 		"-concurrency int",
+		"-include-versions",
+		"s3:GetBucketVersioning",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("--help output missing %q", want)

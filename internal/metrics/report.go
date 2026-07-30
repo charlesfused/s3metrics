@@ -28,8 +28,27 @@ type Report struct {
 	// wall-clock time by 24-48h. Walk mode sets it to the walk start.
 	AsOf time.Time `json:"as_of"`
 
-	TotalSizeBytes int64              `json:"total_size_bytes"`
-	ObjectCount    int64              `json:"object_count"`
+	// Versioned reports whether the bucket keeps noncurrent versions, which is
+	// the dominant reason the two modes disagree. Null when the lookup was
+	// denied: s3:GetBucketVersioning is advisory here and never fails a run.
+	// True for a suspended bucket too — suspending stops new versions being
+	// created but keeps every existing one.
+	Versioned *bool `json:"versioned"`
+
+	TotalSizeBytes int64 `json:"total_size_bytes"`
+	ObjectCount    int64 `json:"object_count"`
+
+	// DeleteMarkers and NoncurrentVersions decompose ObjectCount on a versioned
+	// bucket. Both are null unless the run was a walk with --include-versions:
+	// CloudWatch does not break them out, and a plain listing cannot see them.
+	//
+	// Delete markers carry no size and no storage class, so they appear in no
+	// storage-class row. Hence the reconciliation identity:
+	//
+	//	object_count = sum(storage_classes[].object_count) + delete_markers
+	DeleteMarkers      *int64 `json:"delete_markers"`
+	NoncurrentVersions *int64 `json:"noncurrent_versions"`
+
 	StorageClasses []StorageClassStat `json:"storage_classes"`
 
 	Prefix     string `json:"prefix,omitempty"`

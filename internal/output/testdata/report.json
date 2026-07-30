@@ -3,8 +3,11 @@
   "region": "us-east-1",
   "source": "cloudwatch",
   "as_of": "2026-07-28T00:00:00Z",
+  "versioned": null,
   "total_size_bytes": 10995116277760,
   "object_count": 1500000,
+  "delete_markers": null,
+  "noncurrent_versions": null,
   "storage_classes": [
     {
       "class": "GLACIER",

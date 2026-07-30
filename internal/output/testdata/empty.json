@@ -3,8 +3,11 @@
   "region": "eu-west-1",
   "source": "walk",
   "as_of": "2026-07-29T12:00:00Z",
+  "versioned": null,
   "total_size_bytes": 0,
   "object_count": 0,
+  "delete_markers": null,
+  "noncurrent_versions": null,
   "storage_classes": [],
   "duration_ms": 15
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/charlesfused/s3metrics/internal/awsx"
 	"github.com/charlesfused/s3metrics/internal/buildinfo"
@@ -72,7 +73,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	stderrIsTTY := progress.IsTTY(osFile(stderr))
 	notice := updater.StartBackgroundCheck(updater.New(), cfg.UpdateCheckEnabled(stderrIsTTY))
 
-	rendered, err := collectAndRender(ctx, cfg, stderr, stderrIsTTY)
+	rendered, report, err := collectAndRender(ctx, cfg, stderr, stderrIsTTY)
 	if err != nil {
 		errs.Render(stderr, err, asJSON)
 		return errs.ExitCode(err)
@@ -85,21 +86,48 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	fmt.Fprint(stderr, versionNote(cfg, report, stderrIsTTY))
 	drainNotice(notice, stderr)
 	return 0
 }
 
+// versionNoteText explains a number the user would otherwise have to diagnose
+// externally: a versioned bucket walked without --include-versions reports far
+// fewer objects than metrics mode, and neither figure is wrong.
+const versionNoteText = `note: bucket is versioned — this counts current versions only.
+  --mode metrics also counts noncurrent versions and delete markers;
+  --include-versions makes this walk count them too.
+`
+
+// versionNote returns the advisory line, or "" when it does not apply.
+//
+// Suppressed when stderr is not a terminal, exactly like progress and the update
+// notice: a note nobody can read is only noise in a pipe or a CI log. It is also
+// silent when versioning could not be determined — guessing would be worse than
+// saying nothing.
+func versionNote(cfg *cli.Config, r *metrics.Report, stderrIsTTY bool) string {
+	if !stderrIsTTY || cfg.Mode != cli.ModeWalk || cfg.IncludeVersions {
+		return ""
+	}
+	if r == nil || r.Versioned == nil || !*r.Versioned {
+		return ""
+	}
+	return versionNoteText
+}
+
 // collectAndRender builds the clients, runs the chosen collector, and renders
 // the result into a buffer.
-func collectAndRender(ctx context.Context, cfg *cli.Config, stderr io.Writer, stderrIsTTY bool) ([]byte, error) {
+func collectAndRender(ctx context.Context, cfg *cli.Config, stderr io.Writer,
+	stderrIsTTY bool) ([]byte, *metrics.Report, error) {
+
 	renderer, err := output.New(cfg.Format, cfg.NoHeader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	awsCfg, err := awsx.Load(ctx, cfg.Profile, cfg.Region)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// A client for the lookup only; the real clients are pinned to the region
@@ -108,37 +136,46 @@ func collectAndRender(ctx context.Context, cfg *cli.Config, stderr io.Writer, st
 	region, err := awsx.ResolveRegion(ctx, awsx.NewS3(awsCfg, awsCfg.Region),
 		cfg.Bucket, cfg.Region, awsCfg.Region)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	s3c := awsx.NewS3(awsCfg, region)
 
-	collector, cleanup := newCollector(cfg, awsCfg, region, stderr, stderrIsTTY)
+	// Advisory, and resolved once for both modes: s3:GetBucketVersioning is a
+	// permission plenty of roles lack, and an unknown answer is a null field,
+	// not a failed run. The error is deliberately dropped — IsVersioned returns
+	// nil alongside it, which is precisely what the report should carry.
+	versioned, _ := awsx.IsVersioned(ctx, s3c, cfg.Bucket)
+
+	collector, cleanup := newCollector(cfg, awsCfg, region, s3c, stderr, stderrIsTTY)
 	defer cleanup()
 
 	report, err := collector.Collect(ctx, cfg.Bucket)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	report.Versioned = versioned
 
 	var buf bytes.Buffer
 	if err := renderer.Render(&buf, report); err != nil {
-		return nil, errs.Wrap(err, errs.CodeInternal, "could not render the report", "")
+		return nil, nil, errs.Wrap(err, errs.CodeInternal, "could not render the report", "")
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), report, nil
 }
 
 // newCollector builds the collector for the selected mode, plus a cleanup that
 // stops any progress reporter it started.
-func newCollector(cfg *cli.Config, awsCfg aws.Config, region string,
+func newCollector(cfg *cli.Config, awsCfg aws.Config, region string, s3c *s3.Client,
 	stderr io.Writer, stderrIsTTY bool) (metrics.Collector, func()) {
 
 	if cfg.Mode == cli.ModeWalk {
 		reporter := progress.New(stderr, stderrIsTTY, progressInterval)
 		reporter.Start()
 
-		return walksource.New(awsx.NewS3(awsCfg, region), region, walksource.Options{
-			Prefix:      cfg.Prefix,
-			Concurrency: cfg.Concurrency,
-			Progress:    reporter,
+		return walksource.New(s3c, region, walksource.Options{
+			Prefix:          cfg.Prefix,
+			Concurrency:     cfg.Concurrency,
+			Progress:        reporter,
+			IncludeVersions: cfg.IncludeVersions,
 		}), reporter.Stop
 	}
 

@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/charlesfused/s3metrics/internal/errs"
@@ -18,22 +16,36 @@ type Options struct {
 	Prefix      string
 	Concurrency int
 	Progress    *progress.Reporter
+
+	// IncludeVersions swaps ListObjectsV2 for ListObjectVersions, so the walk
+	// counts noncurrent versions and delete markers as well as current objects.
+	// That is what CloudWatch counts, and on a versioned bucket it is the only
+	// way the two modes can be reconciled.
+	IncludeVersions bool
 }
 
 // Collector computes bucket metrics by listing every object.
 type Collector struct {
-	api    ListObjectsAPI
+	src    objectSource
 	region string
 	opts   Options
 	now    func() time.Time
 }
 
 // New returns a Collector walking through api.
-func New(api ListObjectsAPI, region string, opts Options) *Collector {
+//
+// The source is chosen once, here, and both discovery and the walk are handed
+// the same one — see objectSource for why that matters.
+func New(api BucketAPI, region string, opts Options) *Collector {
 	if opts.Concurrency < 1 {
 		opts.Concurrency = 1
 	}
-	return &Collector{api: api, region: region, opts: opts, now: time.Now}
+
+	var src objectSource = currentSource{api: api}
+	if opts.IncludeVersions {
+		src = versionSource{api: api}
+	}
+	return &Collector{src: src, region: region, opts: opts, now: time.Now}
 }
 
 // SetClock replaces the time source, making AsOf and DurationMS deterministic
@@ -56,7 +68,7 @@ func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report
 		return nil, errs.Classify(err, "s3:ListBucket")
 	}
 
-	d, err := discoverShards(ctx, c.api, bucket, c.opts.Prefix, c.opts.Concurrency, c.opts.Progress)
+	d, err := discoverShards(ctx, c.src, bucket, c.opts.Prefix, c.opts.Concurrency, c.opts.Progress)
 	if err != nil {
 		return nil, errs.Classify(err, "s3:ListBucket")
 	}
@@ -80,6 +92,16 @@ func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report
 		StorageClasses: total.StorageClasses(),
 		Prefix:         c.opts.Prefix,
 	}
+
+	// Only a version-aware walk may report these. Without --include-versions the
+	// listing cannot see a noncurrent version or a delete marker at all, and
+	// "none found" would be a claim this run never tested — so they stay null.
+	if c.opts.IncludeVersions {
+		markers, noncurrent := total.DeleteMarkers, total.NoncurrentVersions
+		report.DeleteMarkers = &markers
+		report.NoncurrentVersions = &noncurrent
+	}
+
 	report.Recompute()
 	report.DurationMS = c.now().Sub(started).Milliseconds()
 	return report, nil
@@ -108,7 +130,7 @@ func (c *Collector) walkShards(ctx context.Context, bucket string, shards []stri
 		i := i
 		g.Go(func() error {
 			for prefix := range ch {
-				agg, err := c.walkPrefix(ctx, bucket, prefix)
+				agg, err := c.src.walkPrefix(ctx, bucket, prefix, c.opts.Progress)
 				if err != nil {
 					return err
 				}
@@ -140,33 +162,4 @@ func (c *Collector) walkShards(ctx context.Context, bucket string, shards []stri
 		merged.Merge(r)
 	}
 	return merged, nil
-}
-
-// walkPrefix lists every object under prefix. No delimiter here: this is the
-// full recursive listing, unlike discovery's level-by-level walk.
-func (c *Collector) walkPrefix(ctx context.Context, bucket, prefix string) (Aggregate, error) {
-	var (
-		agg   Aggregate
-		token *string
-	)
-	for {
-		out, err := c.api.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(bucket),
-			Prefix:            aws.String(prefix),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return Aggregate{}, err
-		}
-
-		for _, obj := range out.Contents {
-			agg.Add(aws.ToInt64(obj.Size), storageClassOf(obj))
-		}
-		c.opts.Progress.AddObjects(int64(len(out.Contents)))
-
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
-			return agg, nil
-		}
-		token = out.NextContinuationToken
-	}
 }

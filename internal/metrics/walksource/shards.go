@@ -3,9 +3,6 @@ package walksource
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-
 	"github.com/charlesfused/s3metrics/internal/progress"
 )
 
@@ -15,12 +12,6 @@ import (
 const maxShardDepth = 2
 
 const delimiter = "/"
-
-// ListObjectsAPI is the slice of the S3 client a walk needs.
-type ListObjectsAPI interface {
-	ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input,
-		opts ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
-}
 
 // discovery is the plan for a walk: prefixes to fan out over, plus the objects
 // already counted while working out that plan.
@@ -51,7 +42,12 @@ type discovery struct {
 //
 // rep is nil-safe; discovery can list a whole flat bucket without walkShards
 // ever running, so counting here is the only way progress is not stuck at zero.
-func discoverShards(ctx context.Context, api ListObjectsAPI, bucket, rootPrefix string,
+//
+// src is the same source the walk will use. That is load-bearing rather than
+// tidy: discovery banks loose objects into the result, so a discovery that
+// listed current versions while the walk listed all of them would report a
+// number that is neither.
+func discoverShards(ctx context.Context, src objectSource, bucket, rootPrefix string,
 	want int, rep *progress.Reporter) (discovery, error) {
 
 	var d discovery
@@ -64,7 +60,7 @@ func discoverShards(ctx context.Context, api ListObjectsAPI, bucket, rootPrefix 
 			levelLoose Aggregate
 		)
 		for _, p := range level {
-			prefixes, loose, err := listLevel(ctx, api, bucket, p, rep)
+			prefixes, loose, err := src.listLevel(ctx, bucket, p, rep)
 			if err != nil {
 				return discovery{}, err
 			}
@@ -101,53 +97,4 @@ func discoverShards(ctx context.Context, api ListObjectsAPI, bucket, rootPrefix 
 
 	d.Shards = shards
 	return d, nil
-}
-
-// listLevel lists one prefix with a delimiter, returning the child prefixes and
-// an aggregate of the objects sitting directly at that level.
-//
-// It reports what it lists to rep (nil-safe). Discovery can be the whole run —
-// a flat bucket is listed entirely here and walkShards never executes — so
-// without this the reporter would print "scanned 0 objects" for the slowest
-// case the tool has. The count is what has been listed, not what will be in the
-// final total: objects under a parent kept as a shard are listed again by the
-// walk, so a mixed layout counts them twice. Progress is advisory; the report's
-// numbers come from the Aggregates, which are exact.
-func listLevel(ctx context.Context, api ListObjectsAPI, bucket, prefix string,
-	rep *progress.Reporter) ([]string, Aggregate, error) {
-	var (
-		prefixes []string
-		loose    Aggregate
-		token    *string
-	)
-	for {
-		in := &s3.ListObjectsV2Input{
-			Bucket:            aws.String(bucket),
-			Delimiter:         aws.String(delimiter),
-			ContinuationToken: token,
-		}
-		if prefix != "" {
-			in.Prefix = aws.String(prefix)
-		}
-
-		out, err := api.ListObjectsV2(ctx, in)
-		if err != nil {
-			return nil, Aggregate{}, err
-		}
-
-		for _, cp := range out.CommonPrefixes {
-			if p := aws.ToString(cp.Prefix); p != "" {
-				prefixes = append(prefixes, p)
-			}
-		}
-		for _, obj := range out.Contents {
-			loose.Add(aws.ToInt64(obj.Size), storageClassOf(obj))
-		}
-		rep.AddObjects(int64(len(out.Contents)))
-
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
-			return prefixes, loose, nil
-		}
-		token = out.NextContinuationToken
-	}
 }

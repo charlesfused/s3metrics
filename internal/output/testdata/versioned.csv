@@ -1,0 +1,5 @@
+bucket,region,source,as_of,storage_class,size_bytes,object_count,overhead
+versionedbucket,eu-central-1,walk,2026-07-29T18:30:00Z,ALL,3221225472,5200,false
+versionedbucket,eu-central-1,walk,2026-07-29T18:30:00Z,GLACIER,1073741824,260,false
+versionedbucket,eu-central-1,walk,2026-07-29T18:30:00Z,STANDARD,2147483648,640,false
+versionedbucket,eu-central-1,walk,2026-07-29T18:30:00Z,STANDARD_IA,0,100,false

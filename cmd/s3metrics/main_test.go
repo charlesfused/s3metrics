@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/charlesfused/s3metrics/internal/cli"
+	"github.com/charlesfused/s3metrics/internal/metrics"
 )
 
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
@@ -75,6 +78,43 @@ func TestInvalidFlagCombinationsExitTwo(t *testing.T) {
 			}
 			if stdout != "" {
 				t.Errorf("stdout = %q, want it empty", stdout)
+			}
+		})
+	}
+}
+
+// The note exists because the first real-bucket run produced a 2.66x gap in
+// object count between the two modes and the tool explained neither number. It
+// is advisory output, so it follows the update notice's discipline exactly: only
+// when it can be read, and only when it is actually true.
+func TestVersionNote(t *testing.T) {
+	yes, no := true, false
+	walk := &cli.Config{Mode: cli.ModeWalk}
+	report := func(v *bool) *metrics.Report { return &metrics.Report{Versioned: v} }
+
+	tests := []struct {
+		name   string
+		cfg    *cli.Config
+		report *metrics.Report
+		isTTY  bool
+		want   bool
+	}{
+		{"versioned walk on a tty", walk, report(&yes), true, true},
+		{"not a tty", walk, report(&yes), false, false},
+		{"bucket is not versioned", walk, report(&no), true, false},
+		{"versioning unknown", walk, report(nil), true, false},
+		{"metrics mode already counts them", &cli.Config{Mode: cli.ModeMetrics}, report(&yes), true, false},
+		{"already including versions", &cli.Config{Mode: cli.ModeWalk, IncludeVersions: true}, report(&yes), true, false},
+		{"no report at all", walk, nil, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := versionNote(tt.cfg, tt.report, tt.isTTY)
+			if (got != "") != tt.want {
+				t.Errorf("versionNote() = %q, want printed = %v", got, tt.want)
+			}
+			if tt.want && !strings.Contains(got, "--include-versions") {
+				t.Errorf("versionNote() = %q, want it to name the switch that fixes this", got)
 			}
 		})
 	}

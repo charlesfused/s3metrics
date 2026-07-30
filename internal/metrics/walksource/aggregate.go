@@ -22,6 +22,12 @@ type ClassStat struct {
 type Aggregate struct {
 	Objects int64
 	Bytes   int64
+
+	// DeleteMarkers and NoncurrentVersions stay zero unless the walk ran against
+	// the version source; a current-only listing cannot see either.
+	DeleteMarkers      int64
+	NoncurrentVersions int64
+
 	Classes map[string]ClassStat
 }
 
@@ -39,10 +45,36 @@ func (a *Aggregate) Add(size int64, class string) {
 	a.Classes[class] = cs
 }
 
+// AddVersion records one object version, current or not.
+//
+// Every version is an object as far as the count goes — that is precisely what
+// CloudWatch's NumberOfObjects measures — so this is Add plus a tally of the
+// noncurrent ones, which exist only to explain the difference.
+func (a *Aggregate) AddVersion(size int64, class string, latest bool) {
+	a.Add(size, class)
+	if !latest {
+		a.NoncurrentVersions++
+	}
+}
+
+// AddDeleteMarker records one delete marker.
+//
+// A marker counts as an object and nothing else: DeleteMarkerEntry carries
+// neither a size nor a storage class, so there is no byte total and no class row
+// it could belong to. On the bucket that prompted this feature they were 88% of
+// a sampled page, which is why the object counts diverged 2.66x while the byte
+// totals differed by 13%.
+func (a *Aggregate) AddDeleteMarker() {
+	a.Objects++
+	a.DeleteMarkers++
+}
+
 // Merge folds other into a.
 func (a *Aggregate) Merge(other Aggregate) {
 	a.Objects += other.Objects
 	a.Bytes += other.Bytes
+	a.DeleteMarkers += other.DeleteMarkers
+	a.NoncurrentVersions += other.NoncurrentVersions
 
 	if len(other.Classes) == 0 {
 		return
@@ -85,6 +117,16 @@ func (a Aggregate) StorageClasses() []metrics.StorageClassStat {
 // means "standard", not "unknown".
 func storageClassOf(obj s3types.Object) string {
 	if c := string(obj.StorageClass); c != "" {
+		return c
+	}
+	return "STANDARD"
+}
+
+// versionClassOf reads a version's class, defaulting to STANDARD for the same
+// reason storageClassOf does. The SDK models the two as distinct enum types even
+// though the values are identical, so this cannot be shared.
+func versionClassOf(v s3types.ObjectVersion) string {
+	if c := string(v.StorageClass); c != "" {
 		return c
 	}
 	return "STANDARD"

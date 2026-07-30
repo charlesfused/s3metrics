@@ -1,0 +1,32 @@
+{
+  "bucket": "versionedbucket",
+  "region": "eu-central-1",
+  "source": "walk",
+  "as_of": "2026-07-29T18:30:00Z",
+  "versioned": true,
+  "total_size_bytes": 3221225472,
+  "object_count": 5200,
+  "delete_markers": 4200,
+  "noncurrent_versions": 900,
+  "storage_classes": [
+    {
+      "class": "GLACIER",
+      "size_bytes": 1073741824,
+      "object_count": 260,
+      "overhead": false
+    },
+    {
+      "class": "STANDARD",
+      "size_bytes": 2147483648,
+      "object_count": 640,
+      "overhead": false
+    },
+    {
+      "class": "STANDARD_IA",
+      "size_bytes": 0,
+      "object_count": 100,
+      "overhead": false
+    }
+  ],
+  "duration_ms": 91044
+}

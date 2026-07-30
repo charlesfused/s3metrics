@@ -16,7 +16,16 @@ import (
 
 var walkNow = time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 
-func collectWith(t *testing.T, api ListObjectsAPI, opts Options) (*metrics.Report, error) {
+// showCount renders a nullable count for a failure message, so that "unknown"
+// reads as null rather than as a pointer address.
+func showCount(p *int64) string {
+	if p == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
+func collectWith(t *testing.T, api BucketAPI, opts Options) (*metrics.Report, error) {
 	t.Helper()
 	c := New(api, "us-east-1", opts)
 	c.SetClock(func() time.Time { return walkNow })
@@ -121,6 +130,195 @@ func TestCoverageInvariant(t *testing.T) {
 	}
 }
 
+// TestCoverageInvariantWithVersions is TestCoverageInvariant's counterpart for
+// the version source, and it exists for a specific failure: discovery counts
+// loose objects as it goes, so if it kept using ListObjectsV2 while the walk used
+// ListObjectVersions, loose keys would be counted current-only and sharded keys
+// all-versions. Fixtures below deliberately mix loose and sharded keys.
+//
+// Totals are computed here from the fixture directly, not from the other run, so
+// concurrency 1 and 8 agreeing on a wrong number is not enough to pass.
+func TestCoverageInvariantWithVersions(t *testing.T) {
+	fixtures := map[string]struct {
+		history  map[string][]fakeVersion
+		pageSize int
+	}{
+		"flat with histories": {history: map[string][]fakeVersion{
+			"a.txt": {{size: 1}, {size: 2}},
+			"b.txt": {{deleteMarker: true}, {size: 4}},
+			"c.txt": {{size: 8}},
+		}},
+		"wide": {history: func() map[string][]fakeVersion {
+			m := map[string][]fakeVersion{}
+			for i := 0; i < 20; i++ {
+				m[fmt.Sprintf("p%02d/obj.txt", i)] = []fakeVersion{
+					{deleteMarker: true}, {size: int64(i)}, {size: int64(i) * 2},
+				}
+			}
+			return m
+		}()},
+		"deep and narrow": {history: map[string][]fakeVersion{
+			"data/2023/a.txt": {{size: 1}, {size: 1}},
+			"data/2024/b.txt": {{deleteMarker: true}},
+			"data/2025/c.txt": {{size: 4}},
+			"data/2026/d.txt": {{size: 8}, {deleteMarker: true}, {size: 8}},
+		}},
+		"loose objects at every level": {history: map[string][]fakeVersion{
+			"root.txt":        {{size: 1}, {size: 1}},
+			"data/direct.txt": {{deleteMarker: true}, {size: 2}},
+			"data/2025/a.txt": {{size: 4}},
+			"data/2026/b.txt": {{size: 8}, {size: 16}},
+			"logs/x.txt":      {{size: 16}},
+		}},
+		"mixed depths": {history: map[string][]fakeVersion{
+			"a.txt":       {{size: 1}},
+			"b/1.txt":     {{size: 2}, {deleteMarker: true}},
+			"b/c/2.txt":   {{size: 4}, {size: 4}, {size: 4}},
+			"b/c/d/3.txt": {{size: 8}},
+			"e/f.txt":     {{deleteMarker: true}, {size: 16}},
+			"g.txt":       {{size: 32}},
+		}},
+		// Small pages force resumes in the middle of a key's history, which is
+		// only survivable if both pagination markers are carried.
+		"paginated mid-key": {pageSize: 3, history: map[string][]fakeVersion{
+			"a/deep.txt": func() []fakeVersion {
+				var vs []fakeVersion
+				for i := 0; i < 11; i++ {
+					vs = append(vs, fakeVersion{size: 1})
+				}
+				return vs
+			}(),
+			"b/deep.txt": func() []fakeVersion {
+				vs := []fakeVersion{{deleteMarker: true}}
+				for i := 0; i < 9; i++ {
+					vs = append(vs, fakeVersion{size: 2})
+				}
+				return vs
+			}(),
+			"loose.txt": {{size: 5}, {size: 5}, {size: 5}, {size: 5}},
+		}},
+	}
+
+	for name, tt := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			newFake := func() *fakeS3 {
+				f := newFakeVersions(tt.history)
+				if tt.pageSize > 0 {
+					f.pageSize = tt.pageSize
+				}
+				return f
+			}
+
+			seq, err := collectWith(t, newFake(), Options{Concurrency: 1, IncludeVersions: true})
+			if err != nil {
+				t.Fatalf("sequential Collect() error = %v", err)
+			}
+			par, err := collectWith(t, newFake(), Options{Concurrency: 8, IncludeVersions: true})
+			if err != nil {
+				t.Fatalf("parallel Collect() error = %v", err)
+			}
+
+			var wantObjects, wantBytes, wantMarkers, wantNoncurrent int64
+			for _, vs := range tt.history {
+				for i, v := range vs {
+					wantObjects++
+					if v.deleteMarker {
+						wantMarkers++
+						continue
+					}
+					wantBytes += v.size
+					if i > 0 {
+						wantNoncurrent++
+					}
+				}
+			}
+
+			check := func(label string, r *metrics.Report) {
+				t.Helper()
+				if r.ObjectCount != wantObjects || r.TotalSizeBytes != wantBytes {
+					t.Errorf("%s = {%d objects, %d bytes}, want {%d, %d}",
+						label, r.ObjectCount, r.TotalSizeBytes, wantObjects, wantBytes)
+				}
+				if r.DeleteMarkers == nil || *r.DeleteMarkers != wantMarkers {
+					t.Errorf("%s DeleteMarkers = %s, want %d", label, showCount(r.DeleteMarkers), wantMarkers)
+				}
+				if r.NoncurrentVersions == nil || *r.NoncurrentVersions != wantNoncurrent {
+					t.Errorf("%s NoncurrentVersions = %s, want %d", label, showCount(r.NoncurrentVersions), wantNoncurrent)
+				}
+
+				// The identity the README publishes.
+				var classed int64
+				for _, sc := range r.StorageClasses {
+					if sc.ObjectCount == nil {
+						t.Fatalf("%s %s.ObjectCount = nil, want a real count", label, sc.Class)
+					}
+					classed += *sc.ObjectCount
+				}
+				if classed+wantMarkers != r.ObjectCount {
+					t.Errorf("%s: sum(classes)=%d + delete_markers=%d != object_count=%d",
+						label, classed, wantMarkers, r.ObjectCount)
+				}
+			}
+			check("sequential", seq)
+			check("parallel", par)
+		})
+	}
+}
+
+// Without --include-versions a walk sees current versions only, and it must say
+// so with nulls rather than claiming zero of something it never looked for.
+func TestCollectWithoutIncludeVersionsLeavesVersionCountsNull(t *testing.T) {
+	f := newFakeVersions(versionHistory())
+
+	r, err := collectWith(t, f, Options{Concurrency: 4})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if r.DeleteMarkers != nil || r.NoncurrentVersions != nil {
+		t.Errorf("DeleteMarkers = %v, NoncurrentVersions = %v, want both null",
+			r.DeleteMarkers, r.NoncurrentVersions)
+	}
+	// b.txt only: a.txt and c.txt read as deleted, so a plain listing skips them.
+	if r.ObjectCount != 1 || r.TotalSizeBytes != 7 {
+		t.Errorf("got {%d objects, %d bytes}, want {1, 7} — current versions only",
+			r.ObjectCount, r.TotalSizeBytes)
+	}
+}
+
+// Zero delete markers on a versioned bucket is a real answer and must not encode
+// the same way as "never looked".
+func TestCollectWithIncludeVersionsReportsZeroesNotNulls(t *testing.T) {
+	f := newFakeVersions(map[string][]fakeVersion{"a.txt": {{size: 3}}})
+
+	r, err := collectWith(t, f, Options{Concurrency: 1, IncludeVersions: true})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if r.DeleteMarkers == nil || *r.DeleteMarkers != 0 {
+		t.Errorf("DeleteMarkers = %v, want a real 0", r.DeleteMarkers)
+	}
+	if r.NoncurrentVersions == nil || *r.NoncurrentVersions != 0 {
+		t.Errorf("NoncurrentVersions = %v, want a real 0", r.NoncurrentVersions)
+	}
+}
+
+func TestCollectWithVersionsPropagatesWorkerError(t *testing.T) {
+	history := map[string][]fakeVersion{}
+	for i := 0; i < 20; i++ {
+		history[fmt.Sprintf("p%02d/obj.txt", i)] = []fakeVersion{{size: 1}}
+	}
+	api := &failAfterN{inner: newFakeVersions(history), n: 1}
+
+	_, err := collectWith(t, api, Options{Concurrency: 4, IncludeVersions: true})
+	if err == nil {
+		t.Fatal("Collect() error = nil, want the worker error propagated")
+	}
+	var e *errs.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("Collect() error = %T, want *errs.Error", err)
+	}
+}
+
 func TestCollectHonoursPrefix(t *testing.T) {
 	f := newFakeS3(map[string]int64{
 		"data/2025/a.txt": 1, "data/2026/b.txt": 2, "other/c.txt": 100,
@@ -169,7 +367,7 @@ func TestCollectAggregatesStorageClasses(t *testing.T) {
 // failAfterN wraps a fake and starts failing once a shard walk begins, so one
 // worker's error must unwind the rest.
 type failAfterN struct {
-	inner ListObjectsAPI
+	inner BucketAPI
 	n     int32
 	calls atomic.Int32
 }
@@ -180,6 +378,14 @@ func (f *failAfterN) ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Inpu
 		return nil, errors.New("simulated API failure")
 	}
 	return f.inner.ListObjectsV2(ctx, in, opts...)
+}
+
+func (f *failAfterN) ListObjectVersions(ctx context.Context, in *s3.ListObjectVersionsInput,
+	opts ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	if f.calls.Add(1) > f.n {
+		return nil, errors.New("simulated API failure")
+	}
+	return f.inner.ListObjectVersions(ctx, in, opts...)
 }
 
 func TestCollectPropagatesWorkerError(t *testing.T) {

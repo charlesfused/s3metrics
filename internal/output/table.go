@@ -19,9 +19,24 @@ func (tableRenderer) Render(w io.Writer, r *metrics.Report) error {
 	fmt.Fprintf(summary, "Bucket\t%s\n", r.Bucket)
 	fmt.Fprintf(summary, "Region\t%s\n", r.Region)
 	fmt.Fprintf(summary, "Source\t%s\n", r.Source)
+	// The three versioning fields are printed only when they are known. A row
+	// reading "0" would claim a measurement that a metrics run, or a walk
+	// without --include-versions, never made.
+	if r.Versioned != nil {
+		fmt.Fprintf(summary, "Versioned\t%s\n", yesNo(*r.Versioned))
+	}
 	fmt.Fprintf(summary, "As of\t%s\n", r.AsOf.UTC().Format(time.RFC3339))
 	fmt.Fprintf(summary, "Total size\t%s\n", humanBytes(r.TotalSizeBytes))
 	fmt.Fprintf(summary, "Objects\t%d\n", r.ObjectCount)
+	// Delete markers carry no bytes and no storage class, so they show up in the
+	// object count and in none of the rows below. Naming them here is what stops
+	// that looking like an arithmetic bug.
+	if r.DeleteMarkers != nil {
+		fmt.Fprintf(summary, "Delete markers\t%d\n", *r.DeleteMarkers)
+	}
+	if r.NoncurrentVersions != nil {
+		fmt.Fprintf(summary, "Noncurrent versions\t%d\n", *r.NoncurrentVersions)
+	}
 	if r.Prefix != "" {
 		fmt.Fprintf(summary, "Prefix\t%s\n", r.Prefix)
 	}
@@ -41,11 +56,15 @@ func (tableRenderer) Render(w io.Writer, r *metrics.Report) error {
 		if sc.ObjectCount != nil {
 			count = fmt.Sprintf("%d", *sc.ObjectCount)
 		}
-		overhead := "no"
-		if sc.Overhead {
-			overhead = "yes"
-		}
-		fmt.Fprintf(classes, "%s\t%s\t%s\t%s\n", sc.Class, humanBytes(sc.SizeBytes), count, overhead)
+		fmt.Fprintf(classes, "%s\t%s\t%s\t%s\n",
+			sc.Class, humanBytes(sc.SizeBytes), count, yesNo(sc.Overhead))
 	}
 	return classes.Flush()
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

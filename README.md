@@ -27,6 +27,7 @@ s3metrics --bucket my-bucket --format table           # human-readable
 s3metrics --bucket my-bucket --format csv             # one ALL row plus one row per class
 s3metrics --bucket my-bucket --mode walk              # list every object and count directly
 s3metrics --bucket my-bucket --mode walk --prefix logs/ --concurrency 16
+s3metrics --bucket my-bucket --mode walk --include-versions   # count versions and delete markers too
 ```
 
 Run `s3metrics --help` for the full switch list.
@@ -44,6 +45,10 @@ Run `s3metrics --help` for the full switch list.
 The two modes do not always measure the same thing. On a versioned bucket they measure genuinely different things, and the gap can be a multiple rather than a percentage — so do not read a disagreement as one mode being wrong.
 
 - **Versioning (the dominant cause).** CloudWatch's `BucketSizeBytes` and `NumberOfObjects` count every noncurrent version and every delete marker. `ListObjectsV2` returns current versions only, so `--mode walk` reports **current-version bytes only**. On a bucket with heavy overwrite traffic and no expiration lifecycle rule, metrics mode can be many times larger.
+
+  Pass **`--include-versions`** to make the walk use `ListObjectVersions` instead, counting every version and delete marker — the same population CloudWatch counts, so the two modes become reconcilable. The report also carries a `versioned` field in both modes, and when a versioned bucket is walked without the switch the tool prints a one-line note to stderr saying so.
+
+  Expect the object counts to diverge much further than the byte totals when this is the cause: delete markers carry no data at all. On the bucket that prompted this feature, one sampled page of `list-object-versions` was 88% delete markers, and the two modes differed 2.66x on object count against 1.13x on bytes.
 - **Incomplete multipart uploads.** Parts uploaded but never completed are counted by the storage metrics and are invisible to a listing, so walk mode never sees them. An abort-incomplete-multipart lifecycle rule is the usual fix.
 - **Glacier overhead.** `total_size_bytes` counts object data only. CloudWatch also reports per-object bookkeeping — Glacier metadata, for instance — under storage types like `GlacierObjectOverhead`. Those appear as their own rows with `"overhead": true` and are **excluded** from the total, so the two modes stay comparable. It also means the total is lower than the S3 console's figure, which includes overhead; add the overhead rows back to reconcile against your bill.
 
@@ -53,6 +58,26 @@ JSON (default) and CSV carry raw byte counts; the table format humanizes sizes b
 
 In metrics mode, per-class `object_count` is `null`: CloudWatch's `NumberOfObjects` metric only publishes for `AllStorageTypes`, so a per-class count does not exist to report. The top-level `object_count` is real in both modes.
 
+### The versioning fields
+
+| Field | Meaning | When it is `null` |
+|---|---|---|
+| `versioned` | bucket keeps noncurrent versions (`Suspended` counts — suspending stops new versions being made but deletes none of the existing ones) | `s3:GetBucketVersioning` was denied or otherwise failed; the lookup is advisory and never fails a run |
+| `delete_markers` | delete markers counted | any metrics run, and any walk without `--include-versions` |
+| `noncurrent_versions` | versions with `IsLatest: false` | same |
+
+All three are `null` rather than `0` when unknown, because "none found" and "never looked" are different answers.
+
+Delete markers carry no size and no storage class — `DeleteMarkerEntry` has neither field — so they count toward `object_count` while appearing in no storage-class row. The totals therefore reconcile as:
+
+```
+object_count = sum(storage_classes[].object_count) + delete_markers
+```
+
+That is not an arithmetic bug; it is what the S3 API reports.
+
+The CSV format omits all three, exactly as it already omits `prefix` and `duration_ms`: they are run metadata rather than per-storage-class facts, and repeating them on every row would corrupt any aggregation done over the file. Use JSON if you need them.
+
 ## Required IAM permissions
 
 ```json
@@ -61,7 +86,12 @@ In metrics mode, per-class `object_count` is `null`: CloudWatch's `NumberOfObjec
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:ListBucket",
+        "s3:ListBucketVersions"
+      ],
       "Resource": "arn:aws:s3:::BUCKET"
     },
     {
@@ -73,7 +103,9 @@ In metrics mode, per-class `object_count` is `null`: CloudWatch's `NumberOfObjec
 }
 ```
 
-`s3:ListBucket` is needed only for walk mode; the CloudWatch actions only for metrics mode.
+`s3:ListBucket` is needed only for walk mode, and `s3:ListBucketVersions` only for `--mode walk --include-versions`; the CloudWatch actions only for metrics mode.
+
+`s3:GetBucketVersioning` is **optional**. It populates the `versioned` field and the stderr note; if it is denied the run continues normally and `versioned` is reported as `null`.
 
 ## Exit codes
 

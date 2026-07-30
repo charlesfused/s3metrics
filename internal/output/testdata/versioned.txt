@@ -1,0 +1,15 @@
+Bucket               versionedbucket
+Region               eu-central-1
+Source               walk
+Versioned            yes
+As of                2026-07-29T18:30:00Z
+Total size           3.0 GiB
+Objects              5200
+Delete markers       4200
+Noncurrent versions  900
+Duration             91044ms
+
+STORAGE CLASS  SIZE     OBJECTS  OVERHEAD
+GLACIER        1.0 GiB  260      no
+STANDARD       2.0 GiB  640      no
+STANDARD_IA    0 B      100      no

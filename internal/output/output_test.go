@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,33 @@ func walkReport() *metrics.Report {
 			{Class: "GLACIER_IR", SizeBytes: 536870912, ObjectCount: i64(10)},
 			{Class: "STANDARD", SizeBytes: 8589934592, ObjectCount: i64(3900)},
 			{Class: "STANDARD_IA", SizeBytes: 1073741824, ObjectCount: i64(300)},
+		},
+	}
+}
+
+// versionedWalkReport is what `--mode walk --include-versions` produces on a
+// versioned bucket: every noncurrent version and delete marker counted. It pins
+// the three fields Task 18 added, and the reconciliation identity between them —
+// 640 + 260 + 100 classed objects plus 4200 delete markers is the 5200 total,
+// because a delete marker belongs to no storage class.
+func versionedWalkReport() *metrics.Report {
+	i64 := func(n int64) *int64 { return &n }
+	yes := true
+	return &metrics.Report{
+		Bucket:             "versionedbucket",
+		Region:             "eu-central-1",
+		Source:             metrics.SourceWalk,
+		AsOf:               time.Date(2026, 7, 29, 18, 30, 0, 0, time.UTC),
+		Versioned:          &yes,
+		TotalSizeBytes:     3221225472,
+		ObjectCount:        5200,
+		DeleteMarkers:      i64(4200),
+		NoncurrentVersions: i64(900),
+		DurationMS:         91044,
+		StorageClasses: []metrics.StorageClassStat{
+			{Class: "GLACIER", SizeBytes: 1073741824, ObjectCount: i64(260)},
+			{Class: "STANDARD", SizeBytes: 2147483648, ObjectCount: i64(640)},
+			{Class: "STANDARD_IA", SizeBytes: 0, ObjectCount: i64(100)},
 		},
 	}
 }
@@ -112,6 +140,9 @@ func TestRenderGolden(t *testing.T) {
 		{"json walk", "json", false, walkReport(), "walk.json"},
 		{"csv walk", "csv", false, walkReport(), "walk.csv"},
 		{"table walk", "table", false, walkReport(), "walk.txt"},
+		{"json versioned walk", "json", false, versionedWalkReport(), "versioned.json"},
+		{"csv versioned walk", "csv", false, versionedWalkReport(), "versioned.csv"},
+		{"table versioned walk", "table", false, versionedWalkReport(), "versioned.txt"},
 		{"json empty", "json", false, emptyReport(), "empty.json"},
 		{"csv empty", "csv", false, emptyReport(), "empty.csv"},
 		{"table empty", "table", false, emptyReport(), "empty.txt"},
@@ -135,6 +166,47 @@ func TestNewRejectsUnknownFormat(t *testing.T) {
 	}
 	if e.Code != errs.CodeUsage {
 		t.Errorf("error code = %s, want %s", e.Code, errs.CodeUsage)
+	}
+}
+
+// CSV stays a per-storage-class table. versioned, delete_markers, and
+// noncurrent_versions are run metadata like prefix and duration_ms: repeating
+// them on every row would corrupt any aggregation done over the file.
+func TestCSVOmitsRunMetadataFields(t *testing.T) {
+	got := render(t, "csv", false, versionedWalkReport())
+
+	// The header names the columns, so it is the honest place to assert. The
+	// bucket in this fixture is called versionedbucket, which a substring search
+	// over the whole document would happily match.
+	header, _, ok := strings.Cut(got, "\n")
+	if !ok {
+		t.Fatalf("csv output has no header row:\n%s", got)
+	}
+	for _, absent := range []string{"versioned", "delete_markers", "noncurrent_versions"} {
+		for _, col := range strings.Split(header, ",") {
+			if col == absent {
+				t.Errorf("csv header contains column %q, want it omitted: %s", absent, header)
+			}
+		}
+	}
+
+	// And no row may have grown: eight columns, as before.
+	for i, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if n := len(strings.Split(line, ",")); n != 8 {
+			t.Errorf("csv row %d has %d columns, want 8: %s", i, n, line)
+		}
+	}
+}
+
+// A nil field means "not measured" and must render as a dash-free absence in the
+// table rather than as a zero, which would be a different claim entirely.
+func TestTableOmitsUnknownVersioningFields(t *testing.T) {
+	got := render(t, "table", false, walkReport())
+
+	for _, absent := range []string{"Versioned", "Delete markers", "Noncurrent versions"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("table output contains %q for a report that never measured it:\n%s", absent, got)
+		}
 	}
 }
 

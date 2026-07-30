@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/charlesfused/s3metrics/internal/errs"
 )
@@ -17,6 +18,36 @@ import (
 type BucketLocationAPI interface {
 	GetBucketLocation(ctx context.Context, in *s3.GetBucketLocationInput,
 		opts ...func(*s3.Options)) (*s3.GetBucketLocationOutput, error)
+}
+
+// BucketVersioningAPI is the slice of the S3 client the versioning lookup needs.
+type BucketVersioningAPI interface {
+	GetBucketVersioning(ctx context.Context, in *s3.GetBucketVersioningInput,
+		opts ...func(*s3.Options)) (*s3.GetBucketVersioningOutput, error)
+}
+
+// IsVersioned reports whether the bucket retains noncurrent object versions.
+//
+// Suspended counts as versioned. Suspending stops S3 creating new versions but
+// destroys none of the existing ones, so every noncurrent version and delete
+// marker made while versioning was on is still there — and still counted by
+// CloudWatch while invisible to a plain listing. Only an absent Status means the
+// bucket was never versioned.
+//
+// The result is a pointer so that "unknown" is expressible. s3:GetBucketVersioning
+// is a permission plenty of roles lack, and this answer is advisory: on any
+// error the caller is expected to ignore it and report null rather than abort,
+// the same principle as the best-effort bucket-location lookup above. The error
+// is returned all the same, for a caller that wants to say why.
+func IsVersioned(ctx context.Context, api BucketVersioningAPI, bucket string) (*bool, error) {
+	out, err := api.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: aws.String(bucket)})
+	if err != nil {
+		return nil, err
+	}
+
+	versioned := out.Status == s3types.BucketVersioningStatusEnabled ||
+		out.Status == s3types.BucketVersioningStatusSuspended
+	return &versioned, nil
 }
 
 // Load reads the ambient AWS configuration. A region is not required here —

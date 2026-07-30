@@ -97,6 +97,62 @@ func TestResolveRegionFallsBackToConfigOnAccessDenied(t *testing.T) {
 	}
 }
 
+type fakeVersioning struct {
+	status s3types.BucketVersioningStatus
+	err    error
+}
+
+func (f *fakeVersioning) GetBucketVersioning(context.Context, *s3.GetBucketVersioningInput,
+	...func(*s3.Options)) (*s3.GetBucketVersioningOutput, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &s3.GetBucketVersioningOutput{Status: f.status}, nil
+}
+
+func TestIsVersioned(t *testing.T) {
+	tests := []struct {
+		name   string
+		status s3types.BucketVersioningStatus
+		want   bool
+	}{
+		{"enabled", s3types.BucketVersioningStatusEnabled, true},
+		// A suspended bucket still holds every noncurrent version and delete
+		// marker created while versioning was on, so the divergence between the
+		// two modes persists. Suspended is versioned for our purposes.
+		{"suspended", s3types.BucketVersioningStatusSuspended, true},
+		// S3 omits Status entirely for a bucket that was never versioned.
+		{"never versioned", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := IsVersioned(context.Background(), &fakeVersioning{status: tt.status}, "b")
+			if err != nil {
+				t.Fatalf("IsVersioned() error = %v", err)
+			}
+			if got == nil {
+				t.Fatal("IsVersioned() = nil, want a known answer")
+			}
+			if *got != tt.want {
+				t.Errorf("IsVersioned() = %v, want %v", *got, tt.want)
+			}
+		})
+	}
+}
+
+// s3:GetBucketVersioning is a permission plenty of roles lack. A denial must
+// leave the answer unknown, never fail the run — the caller ignores the error
+// and reports null.
+func TestIsVersionedReturnsNilOnError(t *testing.T) {
+	got, err := IsVersioned(context.Background(), &fakeVersioning{err: errors.New("access denied")}, "b")
+	if err == nil {
+		t.Error("IsVersioned() error = nil, want the API error returned for the caller to ignore")
+	}
+	if got != nil {
+		t.Errorf("IsVersioned() = %v, want nil — an unknown answer, not a guess", *got)
+	}
+}
+
 func TestResolveRegionErrorsWhenNothingIsAvailable(t *testing.T) {
 	api := &fakeLocation{err: errors.New("boom")}
 

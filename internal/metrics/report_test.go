@@ -86,6 +86,53 @@ func TestNonNilObjectCountMarshalsAsNumber(t *testing.T) {
 	}
 }
 
+// The three versioning fields are pointers so that "unknown" and "zero" stay
+// distinguishable: metrics mode cannot break out delete markers, and a walk
+// without --include-versions cannot see them at all. Both are null, not 0.
+func TestVersioningFieldsMarshalAsNullWhenUnknown(t *testing.T) {
+	b, err := json.Marshal(&Report{Bucket: "b"})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	for _, want := range []string{
+		`"versioned":null`, `"delete_markers":null`, `"noncurrent_versions":null`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("marshalled = %s, want %s", b, want)
+		}
+	}
+}
+
+func TestVersioningFieldsMarshalWhenKnown(t *testing.T) {
+	yes := true
+	r := &Report{Bucket: "b", Versioned: &yes, DeleteMarkers: i64(9), NoncurrentVersions: i64(4)}
+
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	for _, want := range []string{
+		`"versioned":true`, `"delete_markers":9`, `"noncurrent_versions":4`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("marshalled = %s, want %s", b, want)
+		}
+	}
+}
+
+// A never-versioned bucket is a real answer, and it must not encode the same way
+// as a denied lookup.
+func TestVersionedFalseIsNotNull(t *testing.T) {
+	no := false
+	b, err := json.Marshal(&Report{Bucket: "b", Versioned: &no})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(b), `"versioned":false`) {
+		t.Errorf("marshalled = %s, want a false versioned, not null", b)
+	}
+}
+
 func TestEmptyPrefixIsOmitted(t *testing.T) {
 	b, err := json.Marshal(&Report{Bucket: "b"})
 	if err != nil {
