@@ -86,6 +86,13 @@ func Parse(args []string, out io.Writer) (*Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			// PrintDefaults writes to the flag set's own configured output, not
+			// to the out parameter — and fs.SetOutput above points that at
+			// io.Discard so a parse error doesn't print twice. Point it at out
+			// for this one call so the switch list actually reaches the
+			// banner; parsing is already finished by the time usage runs, so
+			// there is nothing left for the discard to protect.
+			fs.SetOutput(out)
 			usage(out, fs) // --help is a request for the banner, not an error
 			return nil, flag.ErrHelp
 		}
@@ -182,12 +189,6 @@ Usage:
 
 Switches:
 `)
-	// PrintDefaults writes to the flag set's own configured output, not to the
-	// out parameter — and Parse points that at io.Discard so a parse error
-	// doesn't print twice. Point it at out for this one call so the switch
-	// list actually reaches the banner; parsing is already finished by the
-	// time usage runs, so there is nothing left for the discard to protect.
-	fs.SetOutput(out)
 	fs.PrintDefaults()
 	fmt.Fprint(out, `
 Modes:

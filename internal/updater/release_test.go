@@ -112,9 +112,9 @@ func TestIsNewer(t *testing.T) {
 		{"v1.2.0", "v1.2.0", false},
 		{"v1.1.0", "v1.2.0", false},
 		{"v2.0.0", "v1.99.99", true},
-		{"1.2.0", "v1.1.0", true},   // missing v prefix is normalised
-		{"v1.2.0", "1.1.0", true},   // on either side
-		{"v1.2.0", "dev", false},    // an unstamped build is not comparable
+		{"1.2.0", "v1.1.0", true}, // missing v prefix is normalised
+		{"v1.2.0", "1.1.0", true}, // on either side
+		{"v1.2.0", "dev", false},  // an unstamped build is not comparable
 		{"v1.2.0", "", false},
 		{"garbage", "v1.0.0", false},
 		{"v1.0.0", "garbage", false},

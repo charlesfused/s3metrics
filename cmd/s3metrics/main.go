@@ -37,7 +37,7 @@ func main() {
 // run is the whole program, parameterised over its streams so it can be tested
 // without a subprocess. It returns the process exit code.
 func run(args []string, stdout, stderr io.Writer) int {
-	cfg, err := cli.Parse(args, stderr)
+	cfg, err := cli.Parse(args, stdout)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}

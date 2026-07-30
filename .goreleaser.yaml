@@ -1,0 +1,43 @@
+version: 2
+project_name: s3metrics
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: s3metrics
+    main: ./cmd/s3metrics
+    binary: s3metrics
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/charlesfused/s3metrics/internal/buildinfo.Version={{.Version}}
+      - -X github.com/charlesfused/s3metrics/internal/buildinfo.Commit={{.ShortCommit}}
+      - -X github.com/charlesfused/s3metrics/internal/buildinfo.Date={{.Date}}
+
+archives:
+  - id: default
+    # tar.gz everywhere, including Windows. The self-updater then has exactly
+    # one archive format to handle, and one format is one fewer thing to get
+    # wrong in the code path that replaces the running binary.
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  draft: false
+  prerelease: auto

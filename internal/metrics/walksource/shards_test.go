@@ -184,10 +184,10 @@ func TestDiscoverKeepsLooseObjectsFromEveryLevel(t *testing.T) {
 	// Descending replaces data/ as a shard, so its direct children would be lost
 	// unless discovery banks them as loose.
 	f := newFakeS3(map[string]int64{
-		"root.txt":         1,
-		"data/direct.txt":  2,
-		"data/2025/a.txt":  4,
-		"data/2026/b.txt":  8,
+		"root.txt":        1,
+		"data/direct.txt": 2,
+		"data/2025/a.txt": 4,
+		"data/2026/b.txt": 8,
 	})
 
 	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
@@ -202,7 +202,7 @@ func TestDiscoverKeepsLooseObjectsFromEveryLevel(t *testing.T) {
 
 func TestDiscoverHonoursRootPrefix(t *testing.T) {
 	f := newFakeS3(map[string]int64{
-		"other/x.txt":    1,
+		"other/x.txt":     1,
 		"data/2025/a.txt": 2,
 		"data/2026/b.txt": 4,
 	})
