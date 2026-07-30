@@ -1,0 +1,12 @@
+Bucket      mybucket
+Region      us-east-1
+Source      cloudwatch
+As of       2026-07-28T00:00:00Z
+Total size  10.0 TiB
+Objects     1500000
+Duration    812ms
+
+STORAGE CLASS            SIZE      OBJECTS  OVERHEAD
+GLACIER                  1.0 TiB   -        no
+GLACIER_OBJECT_OVERHEAD  44.7 GiB  -        yes
+STANDARD                 9.0 TiB   -        no

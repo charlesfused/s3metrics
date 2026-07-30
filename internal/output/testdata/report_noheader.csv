@@ -1,0 +1,4 @@
+mybucket,us-east-1,cloudwatch,2026-07-28T00:00:00Z,ALL,10995116277760,1500000,false
+mybucket,us-east-1,cloudwatch,2026-07-28T00:00:00Z,GLACIER,1099511627776,,false
+mybucket,us-east-1,cloudwatch,2026-07-28T00:00:00Z,GLACIER_OBJECT_OVERHEAD,48000000000,,true
+mybucket,us-east-1,cloudwatch,2026-07-28T00:00:00Z,STANDARD,9895604649984,,false

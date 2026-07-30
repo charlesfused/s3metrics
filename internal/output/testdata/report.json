@@ -1,0 +1,29 @@
+{
+  "bucket": "mybucket",
+  "region": "us-east-1",
+  "source": "cloudwatch",
+  "as_of": "2026-07-28T00:00:00Z",
+  "total_size_bytes": 10995116277760,
+  "object_count": 1500000,
+  "storage_classes": [
+    {
+      "class": "GLACIER",
+      "size_bytes": 1099511627776,
+      "object_count": null,
+      "overhead": false
+    },
+    {
+      "class": "GLACIER_OBJECT_OVERHEAD",
+      "size_bytes": 48000000000,
+      "object_count": null,
+      "overhead": true
+    },
+    {
+      "class": "STANDARD",
+      "size_bytes": 9895604649984,
+      "object_count": null,
+      "overhead": false
+    }
+  ],
+  "duration_ms": 812
+}

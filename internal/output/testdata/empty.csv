@@ -1,0 +1,2 @@
+bucket,region,source,as_of,storage_class,size_bytes,object_count,overhead
+emptybucket,eu-west-1,walk,2026-07-29T12:00:00Z,ALL,0,0,false

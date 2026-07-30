@@ -1,0 +1,9 @@
+Bucket      emptybucket
+Region      eu-west-1
+Source      walk
+As of       2026-07-29T12:00:00Z
+Total size  0 B
+Objects     0
+Duration    15ms
+
+STORAGE CLASS  SIZE  OBJECTS  OVERHEAD
