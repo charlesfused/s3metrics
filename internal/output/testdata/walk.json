@@ -1,0 +1,30 @@
+{
+  "bucket": "walkbucket",
+  "region": "us-west-2",
+  "source": "walk",
+  "as_of": "2026-07-29T09:15:00Z",
+  "total_size_bytes": 10200547328,
+  "object_count": 4210,
+  "storage_classes": [
+    {
+      "class": "GLACIER_IR",
+      "size_bytes": 536870912,
+      "object_count": 10,
+      "overhead": false
+    },
+    {
+      "class": "STANDARD",
+      "size_bytes": 8589934592,
+      "object_count": 3900,
+      "overhead": false
+    },
+    {
+      "class": "STANDARD_IA",
+      "size_bytes": 1073741824,
+      "object_count": 300,
+      "overhead": false
+    }
+  ],
+  "prefix": "logs/2026/",
+  "duration_ms": 48213
+}

@@ -157,7 +157,10 @@ func runUpdateAction(cfg *cli.Config, stdout io.Writer) error {
 	ctx := context.Background()
 
 	if cfg.CheckUpdate {
-		if updater.IsDevBuild() {
+		// Gate on the client's own version — the branch below compares against
+		// client.Version, so reading a different source here could disagree
+		// with it.
+		if client.IsDev() {
 			fmt.Fprintln(stdout, "this is an unstamped development build; no update check performed")
 			return nil
 		}

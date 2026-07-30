@@ -1,0 +1,5 @@
+bucket,region,source,as_of,storage_class,size_bytes,object_count,overhead
+walkbucket,us-west-2,walk,2026-07-29T09:15:00Z,ALL,10200547328,4210,false
+walkbucket,us-west-2,walk,2026-07-29T09:15:00Z,GLACIER_IR,536870912,10,false
+walkbucket,us-west-2,walk,2026-07-29T09:15:00Z,STANDARD,8589934592,3900,false
+walkbucket,us-west-2,walk,2026-07-29T09:15:00Z,STANDARD_IA,1073741824,300,false

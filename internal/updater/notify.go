@@ -47,10 +47,10 @@ func StartBackgroundCheck(c *Client, enabled bool) <-chan string {
 
 	// A dev or unstamped build has no position in the version ordering, so a
 	// check could never produce a notice — skip the request entirely rather
-	// than spend rate-limit budget on it. Read c.Version, not the package-level
-	// buildinfo.Version: the global is always "dev" under `go test`, which is
-	// what made the original IsDevBuild() gate untestable.
-	if !enabled || c.Version == "" || c.Version == "dev" {
+	// than spend rate-limit budget on it. c.IsDev() reads c.Version, not the
+	// package-level buildinfo.Version: the global is always "dev" under
+	// `go test`, which is what made the original package-level gate untestable.
+	if !enabled || c.IsDev() {
 		close(ch)
 		return ch
 	}

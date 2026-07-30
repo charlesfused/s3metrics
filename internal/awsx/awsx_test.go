@@ -68,7 +68,10 @@ func TestResolveRegionLegacyConstraints(t *testing.T) {
 		t.Run(string(tt.constraint), func(t *testing.T) {
 			api := &fakeLocation{constraint: tt.constraint}
 
-			got, err := ResolveRegion(context.Background(), api, "b", "", "")
+			// A non-empty cfgRegion is required to reach the lookup at all: with
+			// nothing configured the SDK could not build an endpoint, so
+			// ResolveRegion refuses before calling.
+			got, err := ResolveRegion(context.Background(), api, "b", "", "us-east-2")
 			if err != nil {
 				t.Fatalf("ResolveRegion() error = %v", err)
 			}
@@ -104,5 +107,13 @@ func TestResolveRegionErrorsWhenNothingIsAvailable(t *testing.T) {
 	var e *errs.Error
 	if !errors.As(err, &e) {
 		t.Fatalf("ResolveRegion() error = %T, want *errs.Error", err)
+	}
+	// Usage, not internal: nothing failed, the user simply has no region
+	// configured anywhere, and the message must say so.
+	if e.Code != errs.CodeUsage {
+		t.Errorf("error code = %s, want %s", e.Code, errs.CodeUsage)
+	}
+	if api.calls != 0 {
+		t.Errorf("GetBucketLocation called %d times, want 0 — the SDK cannot build an endpoint without a region", api.calls)
 	}
 }

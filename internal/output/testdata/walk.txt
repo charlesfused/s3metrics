@@ -1,0 +1,13 @@
+Bucket      walkbucket
+Region      us-west-2
+Source      walk
+As of       2026-07-29T09:15:00Z
+Total size  9.5 GiB
+Objects     4210
+Prefix      logs/2026/
+Duration    48213ms
+
+STORAGE CLASS  SIZE       OBJECTS  OVERHEAD
+GLACIER_IR     512.0 MiB  10       no
+STANDARD       8.0 GiB    3900     no
+STANDARD_IA    1.0 GiB    300      no

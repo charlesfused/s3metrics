@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -116,12 +117,35 @@ func (c *Client) Latest(ctx context.Context) (*Release, error) {
 }
 
 func (c *Client) setHeaders(req *http.Request) {
-	// GitHub rejects requests without a User-Agent outright.
-	req.Header.Set("User-Agent", "s3metrics/"+buildinfo.Version)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	c.setUnauthenticatedHeaders(req)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
+}
+
+// setUnauthenticatedHeaders sets everything setHeaders does except the
+// credentials, for requests to hosts the release payload named rather than
+// hosts we chose.
+func (c *Client) setUnauthenticatedHeaders(req *http.Request) {
+	// GitHub rejects requests without a User-Agent outright.
+	req.Header.Set("User-Agent", "s3metrics/"+buildinfo.Version)
+	req.Header.Set("Accept", "application/vnd.github+json")
+}
+
+// sameHost reports whether two URLs name the same host.
+//
+// Fails closed: a URL that will not parse is the same host as nothing, so an
+// unparseable asset URL loses the credentials rather than gaining them.
+func sameHost(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil || ua.Host == "" {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	return ua.Host == ub.Host
 }
 
 // IsNewer reports whether latest is a strictly greater release than current.
@@ -157,5 +181,12 @@ func AssetName(tag string) string {
 		strings.TrimPrefix(tag, "v"), runtime.GOOS, runtime.GOARCH)
 }
 
-// IsDevBuild reports whether this binary can meaningfully be updated.
-func IsDevBuild() bool { return buildinfo.IsDev() }
+// IsDev reports whether this client's build is unstamped and therefore has no
+// position in the version ordering — nothing can be compared against a release
+// tag, so no update decision is meaningful.
+//
+// This is deliberately a method on Client rather than a package-level function
+// reading buildinfo.Version: the global is always "dev" under `go test`, so a
+// package-level gate can never be exercised, and every gate written that way so
+// far has shipped untested.
+func (c *Client) IsDev() bool { return c.Version == "" || c.Version == "dev" }

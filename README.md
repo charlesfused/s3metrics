@@ -41,9 +41,11 @@ Run `s3metrics --help` for the full switch list.
 
 ### Why the two modes can disagree
 
-`total_size_bytes` counts object data only. CloudWatch also reports per-object bookkeeping — Glacier metadata, for instance — under storage types like `GlacierObjectOverhead`. Those appear as their own rows with `"overhead": true` and are **excluded** from the total, so the two modes report a comparable number.
+The two modes do not always measure the same thing. On a versioned bucket they measure genuinely different things, and the gap can be a multiple rather than a percentage — so do not read a disagreement as one mode being wrong.
 
-That means on a Glacier-heavy bucket the total will be lower than the figure in the S3 console, which includes overhead. Add the overhead rows back to reconcile against your bill.
+- **Versioning (the dominant cause).** CloudWatch's `BucketSizeBytes` and `NumberOfObjects` count every noncurrent version and every delete marker. `ListObjectsV2` returns current versions only, so `--mode walk` reports **current-version bytes only**. On a bucket with heavy overwrite traffic and no expiration lifecycle rule, metrics mode can be many times larger.
+- **Incomplete multipart uploads.** Parts uploaded but never completed are counted by the storage metrics and are invisible to a listing, so walk mode never sees them. An abort-incomplete-multipart lifecycle rule is the usual fix.
+- **Glacier overhead.** `total_size_bytes` counts object data only. CloudWatch also reports per-object bookkeeping — Glacier metadata, for instance — under storage types like `GlacierObjectOverhead`. Those appear as their own rows with `"overhead": true` and are **excluded** from the total, so the two modes stay comparable. It also means the total is lower than the S3 console's figure, which includes overhead; add the overhead rows back to reconcile against your bill.
 
 ## Output
 
@@ -92,7 +94,7 @@ With `--format json`, errors are written to stderr as `{"error":{"code":…,"mes
 |---|---|
 | `AWS_PROFILE`, `AWS_REGION`, … | standard AWS SDK configuration |
 | `S3METRICS_UPDATE_REPO` | repoint self-update at another `owner/repo` |
-| `S3METRICS_NO_UPDATE_CHECK` | set to any value to silence the background update notice |
+| `S3METRICS_NO_UPDATE_CHECK` | set to any non-empty value to silence the background update notice |
 | `GITHUB_TOKEN` | lifts GitHub's 60-per-hour anonymous API rate limit |
 
 ## Development

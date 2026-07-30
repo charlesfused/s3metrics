@@ -41,10 +41,19 @@ func ResolveExecutable() (string, error) {
 	return resolved, nil
 }
 
+// resolveExecutable is a variable purely so a test can point an update at a
+// stand-in binary rather than at the running test binary. Production behaviour
+// is unchanged: it is ResolveExecutable and nothing else ever reassigns it.
+var resolveExecutable = ResolveExecutable
+
 // SelfUpdate fetches the latest release and installs it over this binary.
 // It returns the version installed.
 func (c *Client) SelfUpdate(ctx context.Context) (string, error) {
-	if IsDevBuild() {
+	// Gate on the client's own version, not the package-level buildinfo.Version:
+	// the global is always "dev" under `go test`, which made this gate
+	// untestable and left the whole Latest → IsNewer → Apply flow unexercised.
+	// Same fix as StartBackgroundCheck.
+	if c.IsDev() {
 		return "", errs.New(errs.CodeUpdateFailed,
 			"this is an unstamped development build",
 			"install a released binary, or build with the Makefile so the version is stamped in")
@@ -58,7 +67,7 @@ func (c *Client) SelfUpdate(ctx context.Context) (string, error) {
 		return c.Version, nil // already current; the caller decides what to say
 	}
 
-	exe, err := ResolveExecutable()
+	exe, err := resolveExecutable()
 	if err != nil {
 		return "", err
 	}
@@ -144,12 +153,22 @@ func (c *Client) Apply(ctx context.Context, rel *Release, exePath string) error 
 }
 
 // download streams url into w, returning the SHA256 of what was written.
+//
+// url comes out of the release payload, so it names whatever host that payload
+// says. Credentials are only attached when that host is the API host we already
+// trust — otherwise a hostile or compromised release would collect GITHUB_TOKEN
+// simply by pointing an asset elsewhere. Public release assets need no auth, so
+// this costs nothing in the normal case.
 func (c *Client) download(ctx context.Context, url string, w io.Writer) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", errs.Wrap(err, errs.CodeUpdateFailed, "could not build the download request", "")
 	}
-	c.setHeaders(req)
+	if sameHost(url, c.BaseURL) {
+		c.setHeaders(req)
+	} else {
+		c.setUnauthenticatedHeaders(req)
+	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

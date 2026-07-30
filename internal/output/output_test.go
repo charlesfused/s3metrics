@@ -29,6 +29,31 @@ func sampleReport() *metrics.Report {
 	}
 }
 
+// walkReport is what walk mode actually produces: a prefix scope, and a real
+// per-class object count on every row. sampleReport covers neither — CloudWatch
+// leaves ObjectCount nil and never sets Prefix — so without this fixture the
+// precise mode's rendered output is not pinned anywhere.
+func walkReport() *metrics.Report {
+	i64 := func(n int64) *int64 { return &n }
+	return &metrics.Report{
+		Bucket: "walkbucket",
+		Region: "us-west-2",
+		Source: metrics.SourceWalk,
+		AsOf:   time.Date(2026, 7, 29, 9, 15, 0, 0, time.UTC),
+		// 8 GiB + 1 GiB + 512 MiB, all non-overhead: walk mode never reports
+		// overhead, so the total is simply the sum of the classes.
+		TotalSizeBytes: 10200547328,
+		ObjectCount:    4210,
+		DurationMS:     48213,
+		Prefix:         "logs/2026/",
+		StorageClasses: []metrics.StorageClassStat{
+			{Class: "GLACIER_IR", SizeBytes: 536870912, ObjectCount: i64(10)},
+			{Class: "STANDARD", SizeBytes: 8589934592, ObjectCount: i64(3900)},
+			{Class: "STANDARD_IA", SizeBytes: 1073741824, ObjectCount: i64(300)},
+		},
+	}
+}
+
 func emptyReport() *metrics.Report {
 	return &metrics.Report{
 		Bucket:         "emptybucket",
@@ -84,6 +109,9 @@ func TestRenderGolden(t *testing.T) {
 		{"csv", "csv", false, sampleReport(), "report.csv"},
 		{"csv no header", "csv", true, sampleReport(), "report_noheader.csv"},
 		{"table", "table", false, sampleReport(), "report.txt"},
+		{"json walk", "json", false, walkReport(), "walk.json"},
+		{"csv walk", "csv", false, walkReport(), "walk.csv"},
+		{"table walk", "table", false, walkReport(), "walk.txt"},
 		{"json empty", "json", false, emptyReport(), "empty.json"},
 		{"csv empty", "csv", false, emptyReport(), "empty.csv"},
 		{"table empty", "table", false, emptyReport(), "empty.txt"},

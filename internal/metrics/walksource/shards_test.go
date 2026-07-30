@@ -3,14 +3,18 @@ package walksource
 import (
 	"context"
 	"errors"
+	"io"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/charlesfused/s3metrics/internal/progress"
 )
 
 // fakeS3 serves a flat key->size map as if it were a bucket, honouring Prefix,
@@ -110,7 +114,7 @@ func (f *fakeS3) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input,
 func TestDiscoverFlatBucketYieldsNoShardsAndCountsLoose(t *testing.T) {
 	f := newFakeS3(map[string]int64{"a.txt": 10, "b.txt": 20, "c.txt": 30})
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -129,7 +133,7 @@ func TestDiscoverWideBucketShardsAtDepthOne(t *testing.T) {
 	}
 	f := newFakeS3(keys)
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -150,7 +154,7 @@ func TestDiscoverNarrowTopLevelDescendsToDepthTwo(t *testing.T) {
 	}
 	f := newFakeS3(keys)
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -168,7 +172,7 @@ func TestDiscoverStopsAtDepthTwo(t *testing.T) {
 	// Three levels deep with one prefix each. Discovery must not keep descending.
 	f := newFakeS3(map[string]int64{"a/b/c/x.txt": 1})
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -190,7 +194,7 @@ func TestDiscoverKeepsLooseObjectsFromEveryLevel(t *testing.T) {
 		"data/2026/b.txt": 8,
 	})
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -207,7 +211,7 @@ func TestDiscoverHonoursRootPrefix(t *testing.T) {
 		"data/2026/b.txt": 4,
 	})
 
-	d, err := discoverShards(context.Background(), f, "bucket", "data/", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "data/", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -231,7 +235,7 @@ func TestDiscoverKeepsParentShardsWhenDescentFindsNothing(t *testing.T) {
 		"b/1.txt": 4, "b/2.txt": 8,
 	})
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -244,6 +248,48 @@ func TestDiscoverKeepsParentShardsWhenDescentFindsNothing(t *testing.T) {
 	}
 }
 
+func TestDiscoverKeepsFlatSiblingsAsShards(t *testing.T) {
+	// a/ is nested, b/ is flat. Descending must not dissolve b/ into loose
+	// objects just because its sibling had children.
+	f := newFakeS3(map[string]int64{
+		"a/x/1.txt": 1, "a/y/1.txt": 1,
+		"b/1.txt": 1, "b/2.txt": 1, "b/3.txt": 1,
+		"root.txt": 1,
+	})
+
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
+	if err != nil {
+		t.Fatalf("discoverShards() error = %v", err)
+	}
+
+	var sawB bool
+	for _, s := range d.Shards {
+		if s == "b/" {
+			sawB = true
+		}
+	}
+	if !sawB {
+		t.Errorf("Shards = %v, want b/ kept as a shard", d.Shards)
+	}
+	if d.Loose.Objects != 1 {
+		t.Errorf("Loose.Objects = %d, want 1 (root.txt only)", d.Loose.Objects)
+	}
+}
+
+func TestDiscoverCountsProgressWhileListing(t *testing.T) {
+	// A flat bucket is listed entirely inside discovery — walkShards never runs
+	// — so if discovery does not report, the reporter shows 0 for the whole run.
+	f := newFakeS3(map[string]int64{"a.txt": 1, "b.txt": 2, "c.txt": 3})
+	rep := progress.New(io.Discard, true, time.Hour)
+
+	if _, err := discoverShards(context.Background(), f, "bucket", "", 8, rep); err != nil {
+		t.Fatalf("discoverShards() error = %v", err)
+	}
+	if got := rep.Objects(); got != 3 {
+		t.Errorf("Reporter.Objects() = %d, want 3 — discovery must report what it lists", got)
+	}
+}
+
 func TestDiscoverPaginates(t *testing.T) {
 	keys := map[string]int64{}
 	for i := 0; i < 250; i++ {
@@ -252,7 +298,7 @@ func TestDiscoverPaginates(t *testing.T) {
 	f := newFakeS3(keys)
 	f.pageSize = 10
 
-	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8, nil)
 	if err != nil {
 		t.Fatalf("discoverShards() error = %v", err)
 	}
@@ -265,7 +311,7 @@ func TestDiscoverPropagatesError(t *testing.T) {
 	f := newFakeS3(nil)
 	f.err = errors.New("boom")
 
-	if _, err := discoverShards(context.Background(), f, "bucket", "", 8); err == nil {
+	if _, err := discoverShards(context.Background(), f, "bucket", "", 8, nil); err == nil {
 		t.Fatal("discoverShards() error = nil, want the API error propagated")
 	}
 }

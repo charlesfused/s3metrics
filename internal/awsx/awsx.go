@@ -50,23 +50,33 @@ func Load(ctx context.Context, profile, region string) (aws.Config, error) {
 //
 // Order: an explicit --region, then the bucket's own location, then whatever the
 // AWS config says. The bucket lookup is best-effort, because s3:GetBucketLocation
-// is a permission plenty of roles lack; if it fails and the config names a
-// region, that is a usable answer.
+// is a permission plenty of roles lack; if it fails, the config region is a
+// usable answer.
+//
+// A config region is a precondition for the lookup rather than a fallback after
+// it: the SDK needs a region to build an endpoint at all, so with nothing
+// configured the call cannot even be attempted.
 func ResolveRegion(ctx context.Context, api BucketLocationAPI, bucket, flagRegion, cfgRegion string) (string, error) {
 	if flagRegion != "" {
 		return flagRegion, nil
+	}
+
+	// Without a region the SDK cannot even build an endpoint, so the lookup
+	// below would fail with an opaque endpoint-resolution error that matches no
+	// classification branch and lands on CodeInternal. Say plainly what is
+	// missing instead — this is a plausible first-run state: static keys in the
+	// environment, no AWS_REGION, no --region.
+	if cfgRegion == "" {
+		return "", errs.New(errs.CodeUsage,
+			"no AWS region configured",
+			"pass --region, set AWS_REGION, or add a region to your AWS profile")
 	}
 
 	out, err := api.GetBucketLocation(ctx, &s3.GetBucketLocationInput{Bucket: aws.String(bucket)})
 	if err == nil {
 		return normalizeConstraint(string(out.LocationConstraint)), nil
 	}
-
-	if cfgRegion != "" {
-		return cfgRegion, nil
-	}
-
-	return "", errs.Classify(err, "s3:GetBucketLocation")
+	return cfgRegion, nil
 }
 
 // normalizeConstraint turns a LocationConstraint into a real region name.

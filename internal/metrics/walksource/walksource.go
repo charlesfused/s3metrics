@@ -56,7 +56,7 @@ func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report
 		return nil, errs.Classify(err, "s3:ListBucket")
 	}
 
-	d, err := discoverShards(ctx, c.api, bucket, c.opts.Prefix, c.opts.Concurrency)
+	d, err := discoverShards(ctx, c.api, bucket, c.opts.Prefix, c.opts.Concurrency, c.opts.Progress)
 	if err != nil {
 		return nil, errs.Classify(err, "s3:ListBucket")
 	}

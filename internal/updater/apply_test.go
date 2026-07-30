@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -247,6 +248,190 @@ func TestApplyUnwritableTarget(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "writable") && !strings.Contains(err.Error(), "permission") {
 		t.Errorf("Apply() error = %v, want it to explain the permission problem", err)
+	}
+}
+
+// pointExecutableAt makes SelfUpdate target path instead of the running test
+// binary, restoring the real resolver when the test finishes.
+func pointExecutableAt(t *testing.T, path string) {
+	t.Helper()
+	prev := resolveExecutable
+	resolveExecutable = func() (string, error) { return path, nil }
+	t.Cleanup(func() { resolveExecutable = prev })
+}
+
+func TestSelfUpdateRefusesADevBuildWithoutAskingTheServer(t *testing.T) {
+	// The gate must fire before any request: an unstamped build has no position
+	// in the version ordering, so there is nothing a lookup could decide.
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "dev"
+
+	_, err := c.SelfUpdate(context.Background())
+	if err == nil {
+		t.Fatal("SelfUpdate() error = nil, want a refusal for an unstamped build")
+	}
+	if !strings.Contains(err.Error(), "development build") {
+		t.Errorf("SelfUpdate() error = %v, want it to name the unstamped build", err)
+	}
+	if hits != 0 {
+		t.Errorf("server saw %d requests, want 0 — the gate must precede the lookup", hits)
+	}
+
+	// An empty version is the same situation.
+	c.Version = ""
+	if _, err := c.SelfUpdate(context.Background()); err == nil {
+		t.Error("SelfUpdate() error = nil for an empty version, want a refusal")
+	}
+}
+
+func TestSelfUpdateNoOpsWhenAlreadyCurrent(t *testing.T) {
+	archiveName := AssetName("v1.2.0")
+	archive, sum := buildArchive(t, "s3metrics", "NEW BINARY")
+	srv := updateServer(t, "v1.2.0", archiveName, archive, sum, false)
+
+	exe := installFakeBinary(t)
+	pointExecutableAt(t, exe)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "v1.2.0" // the published release is not newer
+
+	got, err := c.SelfUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("SelfUpdate() error = %v", err)
+	}
+	if got != "v1.2.0" {
+		t.Errorf("SelfUpdate() = %q, want the current version back", got)
+	}
+
+	// Nothing may be installed when nothing is newer.
+	contents, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatalf("reading binary: %v", err)
+	}
+	if string(contents) != "OLD BINARY" {
+		t.Errorf("binary contents = %q, want it untouched", contents)
+	}
+}
+
+func TestSelfUpdateInstallsANewerRelease(t *testing.T) {
+	// The whole flow: Latest → IsNewer → resolve the target → Apply.
+	archiveName := AssetName("v1.2.0")
+	archive, sum := buildArchive(t, "s3metrics", "NEW BINARY")
+	srv := updateServer(t, "v1.2.0", archiveName, archive, sum, false)
+
+	exe := installFakeBinary(t)
+	pointExecutableAt(t, exe)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "v1.0.0"
+
+	got, err := c.SelfUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("SelfUpdate() error = %v", err)
+	}
+	if got != "v1.2.0" {
+		t.Errorf("SelfUpdate() = %q, want v1.2.0", got)
+	}
+
+	contents, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatalf("reading replaced binary: %v", err)
+	}
+	if string(contents) != "NEW BINARY" {
+		t.Errorf("binary contents = %q, want %q", contents, "NEW BINARY")
+	}
+}
+
+func TestSelfUpdateRefusesAnUnverifiedArchive(t *testing.T) {
+	// A corrupt checksum must stop the flow at Apply, leaving the binary intact.
+	archiveName := AssetName("v1.2.0")
+	archive, sum := buildArchive(t, "s3metrics", "MALICIOUS")
+	srv := updateServer(t, "v1.2.0", archiveName, archive, sum, true)
+
+	exe := installFakeBinary(t)
+	pointExecutableAt(t, exe)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "v1.0.0"
+
+	if _, err := c.SelfUpdate(context.Background()); err == nil {
+		t.Fatal("SelfUpdate() error = nil, want a checksum failure")
+	}
+
+	contents, _ := os.ReadFile(exe)
+	if string(contents) != "OLD BINARY" {
+		t.Errorf("binary contents = %q, want it untouched", contents)
+	}
+}
+
+func TestDownloadSendsCredentialsOnlyToTheAPIHost(t *testing.T) {
+	// asset.URL comes out of the release payload, so it can name any host. The
+	// token must not follow it there.
+	var foreignAuth string
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignAuth = r.Header.Get("Authorization")
+		w.Write([]byte("payload"))
+	}))
+	t.Cleanup(foreign.Close)
+
+	var apiAuth string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiAuth = r.Header.Get("Authorization")
+		w.Write([]byte("payload"))
+	}))
+	t.Cleanup(api.Close)
+
+	c := New()
+	c.BaseURL = api.URL
+	c.Token = "super-secret"
+
+	if _, err := c.download(context.Background(), foreign.URL+"/asset.tar.gz", io.Discard); err != nil {
+		t.Fatalf("download() error = %v", err)
+	}
+	if foreignAuth != "" {
+		t.Errorf("foreign host saw Authorization = %q, want none", foreignAuth)
+	}
+
+	if _, err := c.download(context.Background(), api.URL+"/asset.tar.gz", io.Discard); err != nil {
+		t.Fatalf("download() error = %v", err)
+	}
+	if apiAuth != "Bearer super-secret" {
+		t.Errorf("API host saw Authorization = %q, want the bearer token", apiAuth)
+	}
+}
+
+func TestSameHostFailsClosed(t *testing.T) {
+	tests := []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"identical", "https://api.github.com/x", "https://api.github.com", true},
+		{"different host", "https://evil.example/x", "https://api.github.com", false},
+		{"different port is a different host", "http://h:1/x", "http://h:2", false},
+		{"unparseable asset url", "https://%zz", "https://api.github.com", false},
+		{"unparseable base url", "https://api.github.com/x", "https://%zz", false},
+		{"hostless asset url", "/relative/path", "https://api.github.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameHost(tt.a, tt.b); got != tt.want {
+				t.Errorf("sameHost(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
 	}
 }
 
