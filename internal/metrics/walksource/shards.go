@@ -2,7 +2,6 @@ package walksource
 
 import (
 	"context"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -34,52 +33,64 @@ type discovery struct {
 // CommonPrefixes from a single delimiter query are disjoint by construction, so
 // prefix shards never overlap. Keys at a discovery level that contain no further
 // delimiter belong to no child prefix, so each level banks its own loose objects
-// into Loose as it goes — descending replaces a level's prefix shards with its
-// children but keeps what that level already counted.
+// into Loose as it goes.
+//
+// Descent is non-destructive: a level's prefixes only replace the parent level's
+// shards once that level itself yields further child prefixes. A pass that finds
+// no children below it cannot improve the split, so its shard list is discarded
+// and the parent shards are kept instead — the objects the discarded pass already
+// counted get re-listed when those parent shards are walked, so nothing is lost
+// and nothing is double-counted. Without this, a bucket with flat top-level
+// prefixes (bucket/a/*, bucket/b/*, no further nesting) would have its shards
+// dissolved into loose objects, leaving the walk with no parallelism at all.
 //
 // Loose objects are aggregated on the spot rather than kept as a slice: a flat
 // bucket with a million keys would otherwise be held entirely in memory.
 func discoverShards(ctx context.Context, api ListObjectsAPI, bucket, rootPrefix string, want int) (discovery, error) {
 	var d discovery
 	level := []string{rootPrefix}
-	var expanded []string
+	var shards []string
 
-	// maxShardDepth is an absolute depth from the bucket root, not a count of
-	// iterations from rootPrefix: a --prefix that already names one or more path
-	// segments has already spent that much of the depth budget. Without this
-	// adjustment, a narrow rootPrefix causes discovery to overshoot the real tree
-	// by exactly that many levels, converting what should be walkable shards into
-	// prematurely-summed loose objects (still fully counted, just not the
-	// intended shard split). At least one discovery pass always runs regardless
-	// of how deep rootPrefix already is.
-	effectiveMaxDepth := maxShardDepth - strings.Count(rootPrefix, delimiter)
-	if effectiveMaxDepth < 1 {
-		effectiveMaxDepth = 1
-	}
-
-	for depth := 0; depth < effectiveMaxDepth; depth++ {
-		expanded = nil
+	for depth := 0; depth < maxShardDepth; depth++ {
+		var (
+			next       []string
+			levelLoose Aggregate
+		)
 		for _, p := range level {
 			prefixes, loose, err := listLevel(ctx, api, bucket, p)
 			if err != nil {
 				return discovery{}, err
 			}
-			d.Loose.Merge(loose)
-			expanded = append(expanded, prefixes...)
+			levelLoose.Merge(loose)
+			next = append(next, prefixes...)
 		}
 
-		// Nothing below this level: everything under it was loose and is counted.
-		if len(expanded) == 0 {
+		// A pass that finds no child prefixes cannot improve the split. Below the
+		// first level, discard what it counted and keep the parent shards: those
+		// prefixes get walked, which re-lists exactly the objects just discarded,
+		// so nothing is lost and nothing is counted twice. Committing instead
+		// would dissolve good shards into loose objects and leave the walk with no
+		// parallelism at all.
+		if len(next) == 0 {
+			if depth == 0 {
+				// Nothing above to fall back to — this level is the whole answer.
+				d.Loose.Merge(levelLoose)
+			}
 			break
 		}
-		// Enough parallelism — stop here rather than pay for another listing pass.
-		if len(expanded) >= want {
+
+		// This level's own objects belong to no child prefix, so they are loose
+		// no matter how much further discovery descends.
+		d.Loose.Merge(levelLoose)
+		shards = next
+
+		if len(next) >= want {
 			break
 		}
-		level = expanded
+		level = next
 	}
 
-	d.Shards = expanded
+	d.Shards = shards
 	return d, nil
 }
 

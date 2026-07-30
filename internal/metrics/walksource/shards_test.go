@@ -216,6 +216,29 @@ func TestDiscoverHonoursRootPrefix(t *testing.T) {
 	}
 }
 
+func TestDiscoverKeepsParentShardsWhenDescentFindsNothing(t *testing.T) {
+	// Two top-level prefixes, files directly inside them and no deeper nesting.
+	// Descending finds no grandchildren, so discovery must keep a/ and b/ as
+	// shards rather than dissolving them into loose objects — otherwise the walk
+	// gets no parallelism at all on a very common layout.
+	f := newFakeS3(map[string]int64{
+		"a/1.txt": 1, "a/2.txt": 2,
+		"b/1.txt": 4, "b/2.txt": 8,
+	})
+
+	d, err := discoverShards(context.Background(), f, "bucket", "", 8)
+	if err != nil {
+		t.Fatalf("discoverShards() error = %v", err)
+	}
+	if len(d.Shards) != 2 {
+		t.Errorf("Shards = %v, want the two top-level prefixes kept", d.Shards)
+	}
+	if d.Loose.Objects != 0 {
+		t.Errorf("Loose.Objects = %d, want 0 — those objects belong to the shards",
+			d.Loose.Objects)
+	}
+}
+
 func TestDiscoverPaginates(t *testing.T) {
 	keys := map[string]int64{}
 	for i := 0; i < 250; i++ {
