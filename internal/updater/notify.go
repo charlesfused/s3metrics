@@ -45,12 +45,12 @@ func CachePath() (string, error) {
 func StartBackgroundCheck(c *Client, enabled bool) <-chan string {
 	ch := make(chan string, 1)
 
-	// A dev build's Client.Version is "dev" (set from buildinfo.Version in
-	// New()), which IsNewer below already treats as never-upgradeable — no
-	// separate IsDevBuild() gate is needed, and using the package-level
-	// buildinfo.Version here would ignore whatever Version this specific
-	// Client carries.
-	if !enabled {
+	// A dev or unstamped build has no position in the version ordering, so a
+	// check could never produce a notice — skip the request entirely rather
+	// than spend rate-limit budget on it. Read c.Version, not the package-level
+	// buildinfo.Version: the global is always "dev" under `go test`, which is
+	// what made the original IsDevBuild() gate untestable.
+	if !enabled || c.Version == "" || c.Version == "dev" {
 		close(ch)
 		return ch
 	}

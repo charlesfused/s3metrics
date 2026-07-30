@@ -133,6 +133,29 @@ func TestFreshCacheSkipsTheNetwork(t *testing.T) {
 	}
 }
 
+func TestBackgroundCheckSkipsDevBuild(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, `{"tag_name":"v9.9.9","assets":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "dev"
+
+	for msg := range StartBackgroundCheck(c, true) {
+		t.Errorf("notice = %q, want silence for an unstamped build", msg)
+	}
+	if hits != 0 {
+		t.Errorf("server was hit %d times, want 0 — a dev build must not spend rate limit", hits)
+	}
+}
+
 func TestStaleCacheTriggersRefresh(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheDir)
