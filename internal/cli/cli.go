@@ -61,7 +61,13 @@ func (c *Config) UpdateCheckEnabled(stderrIsTTY bool) bool {
 // help was requested, so the caller can exit 0 for that case.
 func Parse(args []string, out io.Writer) (*Config, error) {
 	fs := flag.NewFlagSet("s3metrics", flag.ContinueOnError)
-	fs.SetOutput(out)
+
+	// Silence the flag package's own output. On a parse error it would print
+	// both its one-line message and the full usage banner, while a
+	// validation error prints only a one-liner — inconsistent, and the banner
+	// buries the actual problem. Parse returns a categorised error for the
+	// caller to render instead, and --help is handled explicitly below.
+	fs.SetOutput(io.Discard)
 
 	c := &Config{}
 	fs.StringVar(&c.Bucket, "bucket", "", "S3 bucket name (required)")
@@ -78,10 +84,9 @@ func Parse(args []string, out io.Writer) (*Config, error) {
 	fs.BoolVar(&c.NoUpdateCheck, "no-update-check", false, "suppress the background update notice")
 	fs.BoolVar(&c.ShowVersion, "version", false, "print version information, then exit")
 
-	fs.Usage = func() { usage(out, fs) }
-
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			usage(out, fs) // --help is a request for the banner, not an error
 			return nil, flag.ErrHelp
 		}
 		return nil, errs.New(errs.CodeUsage, err.Error(), "run s3metrics --help for the full switch list")
@@ -177,6 +182,12 @@ Usage:
 
 Switches:
 `)
+	// PrintDefaults writes to the flag set's own configured output, not to the
+	// out parameter — and Parse points that at io.Discard so a parse error
+	// doesn't print twice. Point it at out for this one call so the switch
+	// list actually reaches the banner; parsing is already finished by the
+	// time usage runs, so there is nothing left for the discard to protect.
+	fs.SetOutput(out)
 	fs.PrintDefaults()
 	fmt.Fprint(out, `
 Modes:

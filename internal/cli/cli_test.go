@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,10 +114,36 @@ func TestParseUpdateActionsDoNotNeedBucket(t *testing.T) {
 	}
 }
 
-func TestParseHelpReturnsErrHelp(t *testing.T) {
-	_, err := Parse([]string{"--help"}, io.Discard)
+func TestParseHelpReturnsErrHelpAndPrintsBanner(t *testing.T) {
+	var out bytes.Buffer
+	_, err := Parse([]string{"--help"}, &out)
+
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Errorf("Parse(--help) error = %v, want flag.ErrHelp", err)
+	}
+	for _, want := range []string{
+		"--bucket", "Exit codes:", "Required IAM permissions:",
+		// A flag's own PrintDefaults line, not just the static banner text —
+		// this is what catches the switch list silently going missing.
+		"-concurrency int",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--help output missing %q", want)
+		}
+	}
+}
+
+func TestParseErrorDoesNotPrintBanner(t *testing.T) {
+	// A parse error must produce one categorised error for the caller to
+	// render, not the flag package's own message plus the whole banner —
+	// which would bury the actual problem and be inconsistent with how
+	// validation errors are reported.
+	var out bytes.Buffer
+	if _, err := Parse([]string{"--bucket", "b", "--nope"}, &out); err == nil {
+		t.Fatal("Parse(--nope) error = nil, want a usage error")
+	}
+	if out.Len() != 0 {
+		t.Errorf("Parse wrote %q to out, want nothing — the caller renders the error", out.String())
 	}
 }
 
