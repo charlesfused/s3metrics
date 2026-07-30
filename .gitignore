@@ -10,3 +10,7 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Agent worktrees and scratch state
+/.claude/
+/.superpowers/
