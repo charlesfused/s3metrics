@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,12 +16,16 @@ import (
 // fakeS3 serves a flat key->size map as if it were a bucket, honouring Prefix,
 // Delimiter, ContinuationToken, and a page size, so pagination and shard
 // discovery are exercised the way the real API would exercise them.
+//
+// calls is atomic because Task 12's collector calls ListObjectsV2 from
+// multiple worker goroutines concurrently — discoverShards (Task 11) never
+// did, so this fixture was never exercised concurrently until now.
 type fakeS3 struct {
 	keys     map[string]int64
 	classes  map[string]string // key -> storage class; absent means the field is nil
 	pageSize int
 	err      error
-	calls    int
+	calls    atomic.Int64
 }
 
 func newFakeS3(keys map[string]int64) *fakeS3 {
@@ -29,7 +34,7 @@ func newFakeS3(keys map[string]int64) *fakeS3 {
 
 func (f *fakeS3) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input,
 	_ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	f.calls++
+	f.calls.Add(1)
 	if f.err != nil {
 		return nil, f.err
 	}
