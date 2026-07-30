@@ -3,7 +3,8 @@
 **Date:** 2026-07-29
 **Status:** Approved
 **Module:** `github.com/charlesfused/s3metrics`
-**Go:** 1.22
+**Go:** 1.25 (floor set by dependencies: aws-sdk-go-v2 requires 1.24, the
+`golang.org/x` modules require 1.25)
 
 ## 1. Purpose
 
