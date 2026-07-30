@@ -100,3 +100,46 @@ func TestConcurrentAddObjects(t *testing.T) {
 		t.Errorf("Objects() = %d, want 5000", got)
 	}
 }
+
+func TestStopWithoutStartDoesNotHang(t *testing.T) {
+	// A caller that defers Stop above a conditional Start must not freeze.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		New(&syncBuf{}, true, time.Millisecond).Stop()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() blocked when Start() was never called")
+	}
+}
+
+func TestDoubleStartIsSafe(t *testing.T) {
+	r := New(&syncBuf{}, true, time.Millisecond)
+	r.Start()
+	r.Start() // must not spawn a second goroutine
+	r.Stop()  // must not panic on a double channel close
+}
+
+func TestComma(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0"},
+		{100, "100"},
+		{1234, "1,234"},
+		{123456, "123,456"},
+		{1234567, "1,234,567"},
+		{-123, "-123"},
+		{-1234, "-1,234"},
+		{-123456, "-123,456"},
+	}
+	for _, tt := range tests {
+		if got := comma(tt.n); got != tt.want {
+			t.Errorf("comma(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+	}
+}
