@@ -90,8 +90,10 @@ b,eu-central-1,walk,2026-07-29T18:30:00Z,STANDARD_IA,0,100,false
 so the CSV identity is simply:
 
 ```
-sum(class rows) == ALL row        # 4200 + 260 + 640 + 100 = 5200
+sum(class rows) == ALL row        # 4200 + 260 + 640 + 100 = 5200   (walk mode)
 ```
+
+That CSV identity holds in walk mode. A metrics-mode CSV can include overhead rows, which are deliberately excluded from the `ALL` total, so its class rows sum higher than `ALL` by exactly the overhead — and its per-class `object_count` fields are empty, because CloudWatch publishes no per-class count.
 
 `DELETE_MARKER` is a CSV-only device and not a real S3 storage class, so it never appears in the JSON `storage_classes` array or in the table. The row is emitted only when a version-aware walk actually found delete markers: absent under plain `--mode walk`, and absent when the count is a genuine zero.
 

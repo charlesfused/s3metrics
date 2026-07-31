@@ -33,8 +33,14 @@ const deleteMarkerClass = "DELETE_MARKER"
 // the format most likely to be fed to something that checks totals, so it gets
 // a synthesised DELETE_MARKER row instead. The two identities are therefore:
 //
-//	CSV:  sum(class rows) == ALL row
+//	CSV:  sum(class rows) == ALL row   (walk mode)
 //	JSON: object_count = sum(storage_classes[].object_count) + delete_markers
+//
+// The CSV identity holds in walk mode only. A metrics-mode CSV can carry
+// overhead rows, which Recompute deliberately excludes from the total, so its
+// class rows sum higher than the ALL row by exactly the overhead — and its
+// per-class object_count fields are empty, because CloudWatch publishes no
+// per-class count.
 func (c csvRenderer) Render(w io.Writer, r *metrics.Report) error {
 	cw := csv.NewWriter(w)
 
