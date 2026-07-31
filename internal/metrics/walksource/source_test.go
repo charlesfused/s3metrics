@@ -7,6 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/charlesfused/s3metrics/internal/errs"
 	"github.com/charlesfused/s3metrics/internal/progress"
 )
 
@@ -148,6 +153,85 @@ func TestVersionSourcePropagatesError(t *testing.T) {
 	}
 	if _, _, err := (versionSource{api: f}).listLevel(context.Background(), "bucket", "", nil); err == nil {
 		t.Fatal("listLevel() error = nil, want the API error propagated")
+	}
+}
+
+// IsLatest is a pointer, and only an explicit false makes a version noncurrent.
+// Reading a nil as "noncurrent" would invent a number out of a field S3 never
+// sent; the tally is advisory, so an unknown must not be counted.
+func TestAddPageTreatsMissingIsLatestAsCurrent(t *testing.T) {
+	out := &s3.ListObjectVersionsOutput{
+		Versions: []s3types.ObjectVersion{
+			{Key: aws.String("a"), Size: aws.Int64(1)},                            // IsLatest absent
+			{Key: aws.String("b"), Size: aws.Int64(2), IsLatest: aws.Bool(false)}, // explicitly noncurrent
+			{Key: aws.String("c"), Size: aws.Int64(4), IsLatest: aws.Bool(true)},  // explicitly current
+		},
+	}
+
+	var agg Aggregate
+	if got := addPage(&agg, out); got != 3 {
+		t.Errorf("addPage() = %d, want 3 entries counted", got)
+	}
+	if agg.Objects != 3 || agg.Bytes != 7 {
+		t.Errorf("got {%d objects, %d bytes}, want {3, 7}", agg.Objects, agg.Bytes)
+	}
+	if agg.NoncurrentVersions != 1 {
+		t.Errorf("NoncurrentVersions = %d, want 1 — only the explicit false counts",
+			agg.NoncurrentVersions)
+	}
+}
+
+// A truncated page with no continuation marker cannot be resumed. Returning the
+// aggregate so far with a nil error would report a short total as if it were
+// complete, which is the one failure mode worse than an error.
+func TestVersionSourceRejectsTruncationWithNoMarker(t *testing.T) {
+	api := &unresumableAPI{}
+
+	_, err := versionSource{api: api}.walkPrefix(context.Background(), "bucket", "", nil)
+	if err == nil {
+		t.Fatal("walkPrefix() error = nil, want a truncation error rather than a short count")
+	}
+	var e *errs.Error
+	if !errors.As(err, &e) || e.Code != errs.CodeInternal {
+		t.Fatalf("walkPrefix() error = %v, want an *errs.Error with code %s", err, errs.CodeInternal)
+	}
+
+	if _, _, err := (versionSource{api: api}).listLevel(context.Background(), "bucket", "", nil); err == nil {
+		t.Fatal("listLevel() error = nil, want a truncation error rather than a short count")
+	}
+}
+
+// unresumableAPI claims more pages exist but names none, which is what a
+// protocol violation or a broken proxy looks like from here.
+type unresumableAPI struct{}
+
+func (unresumableAPI) ListObjectsV2(context.Context, *s3.ListObjectsV2Input,
+	...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	return &s3.ListObjectsV2Output{
+		Contents:    []s3types.Object{{Key: aws.String("a"), Size: aws.Int64(1)}},
+		IsTruncated: aws.Bool(true),
+	}, nil
+}
+
+func (unresumableAPI) ListObjectVersions(context.Context, *s3.ListObjectVersionsInput,
+	...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	return &s3.ListObjectVersionsOutput{
+		Versions:    []s3types.ObjectVersion{{Key: aws.String("a"), Size: aws.Int64(1)}},
+		IsTruncated: aws.Bool(true),
+	}, nil
+}
+
+// The current-only source had the same silent-truncation hole before this task.
+// Fixing one path and not the other would leave the older, more travelled one
+// quietly wrong.
+func TestCurrentSourceRejectsTruncationWithNoMarker(t *testing.T) {
+	api := &unresumableAPI{}
+
+	if _, err := (currentSource{api: api}).walkPrefix(context.Background(), "bucket", "", nil); err == nil {
+		t.Fatal("walkPrefix() error = nil, want a truncation error rather than a short count")
+	}
+	if _, _, err := (currentSource{api: api}).listLevel(context.Background(), "bucket", "", nil); err == nil {
+		t.Fatal("listLevel() error = nil, want a truncation error rather than a short count")
 	}
 }
 

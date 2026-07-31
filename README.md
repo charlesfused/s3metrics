@@ -68,7 +68,7 @@ In metrics mode, per-class `object_count` is `null`: CloudWatch's `NumberOfObjec
 
 All three are `null` rather than `0` when unknown, because "none found" and "never looked" are different answers.
 
-Delete markers carry no size and no storage class — `DeleteMarkerEntry` has neither field — so they count toward `object_count` while appearing in no storage-class row. The totals therefore reconcile as:
+Delete markers carry no size and no storage class — `DeleteMarkerEntry` has neither field — so they count toward `object_count` while appearing in no storage-class row. In **JSON** and the table, the totals therefore reconcile as:
 
 ```
 object_count = sum(storage_classes[].object_count) + delete_markers
@@ -76,7 +76,24 @@ object_count = sum(storage_classes[].object_count) + delete_markers
 
 That is not an arithmetic bug; it is what the S3 API reports.
 
-The CSV format omits all three, exactly as it already omits `prefix` and `duration_ms`: they are run metadata rather than per-storage-class facts, and repeating them on every row would corrupt any aggregation done over the file. Use JSON if you need them.
+**CSV is different, deliberately.** It omits `versioned`, `delete_markers`, and `noncurrent_versions` as columns, exactly as it already omits `prefix` and `duration_ms`: those are run metadata rather than per-storage-class facts, and repeating them on every row would corrupt any aggregation done over the file. But delete markers are not metadata — they are objects, and leaving them out entirely would mean the long format stopped adding up. So under `--include-versions` the CSV gains a synthesised `DELETE_MARKER` row with `size_bytes=0`, sorted in among the real classes:
+
+```
+bucket,region,source,as_of,storage_class,size_bytes,object_count,overhead
+b,eu-central-1,walk,2026-07-29T18:30:00Z,ALL,3221225472,5200,false
+b,eu-central-1,walk,2026-07-29T18:30:00Z,DELETE_MARKER,0,4200,false
+b,eu-central-1,walk,2026-07-29T18:30:00Z,GLACIER,1073741824,260,false
+b,eu-central-1,walk,2026-07-29T18:30:00Z,STANDARD,2147483648,640,false
+b,eu-central-1,walk,2026-07-29T18:30:00Z,STANDARD_IA,0,100,false
+```
+
+so the CSV identity is simply:
+
+```
+sum(class rows) == ALL row        # 4200 + 260 + 640 + 100 = 5200
+```
+
+`DELETE_MARKER` is a CSV-only device and not a real S3 storage class, so it never appears in the JSON `storage_classes` array or in the table. The row is emitted only when a version-aware walk actually found delete markers: absent under plain `--mode walk`, and absent when the count is a genuine zero.
 
 ## Required IAM permissions
 

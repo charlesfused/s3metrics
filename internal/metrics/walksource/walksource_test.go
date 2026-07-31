@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 
 	"github.com/charlesfused/s3metrics/internal/errs"
 	"github.com/charlesfused/s3metrics/internal/metrics"
@@ -316,6 +318,63 @@ func TestCollectWithVersionsPropagatesWorkerError(t *testing.T) {
 	var e *errs.Error
 	if !errors.As(err, &e) {
 		t.Fatalf("Collect() error = %T, want *errs.Error", err)
+	}
+}
+
+// denyAll refuses every call the way AWS does, with a Smithy API error, so
+// errs.Classify takes its access-denied branch rather than the catch-all.
+type denyAll struct{}
+
+func (denyAll) ListObjectsV2(context.Context, *s3.ListObjectsV2Input,
+	...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	return nil, &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}
+}
+
+func (denyAll) ListObjectVersions(context.Context, *s3.ListObjectVersionsInput,
+	...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	return nil, &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}
+}
+
+// ListObjectVersions is gated by s3:ListBucketVersions, which is a different IAM
+// action from s3:ListBucket. Naming the wrong one sends a denied user to add a
+// permission they already hold — the precise diagnostic failure this task exists
+// to remove, on the code path this task added.
+func TestCollectNamesTheDeniedIAMAction(t *testing.T) {
+	tests := []struct {
+		name            string
+		includeVersions bool
+		want            string
+		notWant         string
+	}{
+		{"current-version walk", false, "s3:ListBucket", "s3:ListBucketVersions"},
+		{"version-aware walk", true, "s3:ListBucketVersions", "s3:ListBucket"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := collectWith(t, denyAll{},
+				Options{Concurrency: 4, IncludeVersions: tt.includeVersions})
+			if err == nil {
+				t.Fatal("Collect() error = nil, want an access-denied error")
+			}
+
+			var e *errs.Error
+			if !errors.As(err, &e) {
+				t.Fatalf("Collect() error = %T, want *errs.Error", err)
+			}
+			if e.Code != errs.CodeAccessDenied {
+				t.Fatalf("Code = %s, want %s", e.Code, errs.CodeAccessDenied)
+			}
+
+			// Matched with the trailing words, because "s3:ListBucketVersions"
+			// contains "s3:ListBucket" — a bare substring check would pass for
+			// both rows and prove nothing.
+			if !strings.Contains(e.Hint, tt.want+" on this resource") {
+				t.Errorf("Hint = %q, want it to name %s", e.Hint, tt.want)
+			}
+			if strings.Contains(e.Hint, tt.notWant+" on this resource") {
+				t.Errorf("Hint = %q, must not name %s", e.Hint, tt.notWant)
+			}
+		})
 	}
 }
 

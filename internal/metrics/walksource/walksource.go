@@ -61,16 +61,18 @@ func (c *Collector) SetClock(now func() time.Time) { c.now = now }
 func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report, error) {
 	started := c.now()
 
+	perm := c.permission()
+
 	// An already-dead context must fail here rather than somewhere downstream.
 	// Without this the outcome depends on which branch a select happens to take
 	// when both are ready, which is not a thing to leave to chance.
 	if err := ctx.Err(); err != nil {
-		return nil, errs.Classify(err, "s3:ListBucket")
+		return nil, errs.Classify(err, perm)
 	}
 
 	d, err := discoverShards(ctx, c.src, bucket, c.opts.Prefix, c.opts.Concurrency, c.opts.Progress)
 	if err != nil {
-		return nil, errs.Classify(err, "s3:ListBucket")
+		return nil, errs.Classify(err, perm)
 	}
 
 	total := d.Loose // objects already counted while planning
@@ -78,7 +80,7 @@ func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report
 	if len(d.Shards) > 0 {
 		walked, err := c.walkShards(ctx, bucket, d.Shards)
 		if err != nil {
-			return nil, errs.Classify(err, "s3:ListBucket")
+			return nil, errs.Classify(err, perm)
 		}
 		total.Merge(walked)
 	}
@@ -105,6 +107,20 @@ func (c *Collector) Collect(ctx context.Context, bucket string) (*metrics.Report
 	report.Recompute()
 	report.DurationMS = c.now().Sub(started).Milliseconds()
 	return report, nil
+}
+
+// permission names the IAM action this walk actually attempts, which is what an
+// access-denied hint quotes back to the user.
+//
+// ListObjectVersions is gated by s3:ListBucketVersions, a distinct action from
+// s3:ListBucket — a denied --include-versions run told to add s3:ListBucket
+// would be sent to a permission it already has, which is exactly the kind of
+// unexplained answer this feature exists to stop producing.
+func (c *Collector) permission() string {
+	if c.opts.IncludeVersions {
+		return "s3:ListBucketVersions"
+	}
+	return "s3:ListBucket"
 }
 
 // walkShards fans the shard list out across workers.

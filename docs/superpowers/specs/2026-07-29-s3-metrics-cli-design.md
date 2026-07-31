@@ -317,7 +317,12 @@ s3metrics: no AWS credentials found
   "Version": "2012-10-17",
   "Statement": [
     { "Effect": "Allow",
-      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:ListBucket",
+        "s3:ListBucketVersions"
+      ],
       "Resource": "arn:aws:s3:::BUCKET" },
     { "Effect": "Allow",
       "Action": ["cloudwatch:ListMetrics", "cloudwatch:GetMetricData"],
@@ -326,8 +331,12 @@ s3metrics: no AWS credentials found
 }
 ```
 
-`s3:ListBucket` is needed only for walk mode; the CloudWatch actions only for metrics
-mode.
+`s3:ListBucket` is needed only for walk mode, and `s3:ListBucketVersions` only for
+`--mode walk --include-versions` — `ListObjectVersions` is gated by a distinct IAM
+action from `ListObjectsV2`; the CloudWatch actions only for metrics mode.
+
+`s3:GetBucketVersioning` is optional. It populates the `versioned` field and the
+stderr note; if it is denied the run continues and `versioned` is reported as null.
 
 ## 11. Self-update
 

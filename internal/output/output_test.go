@@ -2,9 +2,11 @@ package output
 
 import (
 	"bytes"
+	"encoding/csv"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +198,98 @@ func TestCSVOmitsRunMetadataFields(t *testing.T) {
 			t.Errorf("csv row %d has %d columns, want 8: %s", i, n, line)
 		}
 	}
+}
+
+// Under --include-versions the ALL row counts delete markers while no storage
+// class does, so without a DELETE_MARKER row the long format stops summing — and
+// CSV is the format most likely to be fed to something that checks totals. The
+// row is synthesised by the renderer, never added to Report.StorageClasses,
+// which has to keep meaning real S3 storage classes for JSON and the table.
+func TestCSVClassRowsSumToTheALLRow(t *testing.T) {
+	rows := parseCSV(t, render(t, "csv", false, versionedWalkReport()))
+
+	var (
+		allSize, allCount     int64
+		classSize, classCount int64
+		sawDeleteMarker       bool
+	)
+	for _, row := range rows {
+		size, err := strconv.ParseInt(row["size_bytes"], 10, 64)
+		if err != nil {
+			t.Fatalf("size_bytes %q: %v", row["size_bytes"], err)
+		}
+		count, err := strconv.ParseInt(row["object_count"], 10, 64)
+		if err != nil {
+			t.Fatalf("object_count %q: %v", row["object_count"], err)
+		}
+
+		if row["storage_class"] == "ALL" {
+			allSize, allCount = size, count
+			continue
+		}
+		if row["storage_class"] == "DELETE_MARKER" {
+			sawDeleteMarker = true
+			if size != 0 {
+				t.Errorf("DELETE_MARKER size_bytes = %d, want 0 — a marker carries no data", size)
+			}
+			if row["overhead"] != "false" {
+				t.Errorf("DELETE_MARKER overhead = %q, want false", row["overhead"])
+			}
+		}
+		classSize += size
+		classCount += count
+	}
+
+	if !sawDeleteMarker {
+		t.Fatal("no DELETE_MARKER row, so the class rows cannot account for the ALL row")
+	}
+	if classCount != allCount {
+		t.Errorf("class rows total %d objects, ALL row says %d", classCount, allCount)
+	}
+	if classSize != allSize {
+		t.Errorf("class rows total %d bytes, ALL row says %d", classSize, allSize)
+	}
+}
+
+// The row is a CSV-only device. Adding it to the report would make JSON and the
+// table claim a storage class that does not exist in S3.
+func TestDeleteMarkerRowIsAbsentFromJSONAndTable(t *testing.T) {
+	for _, format := range []string{"json", "table"} {
+		if got := render(t, format, false, versionedWalkReport()); strings.Contains(got, "DELETE_MARKER") {
+			t.Errorf("%s output contains a DELETE_MARKER class row:\n%s", format, got)
+		}
+	}
+}
+
+// Without --include-versions there is nothing to account for, so the row must
+// not appear at all — a 0 would claim a measurement the run never made.
+func TestCSVOmitsDeleteMarkerRowWhenUnknown(t *testing.T) {
+	if got := render(t, "csv", false, walkReport()); strings.Contains(got, "DELETE_MARKER") {
+		t.Errorf("csv output contains a DELETE_MARKER row for a walk that never counted them:\n%s", got)
+	}
+}
+
+// parseCSV turns rendered CSV into header-keyed rows.
+func parseCSV(t *testing.T, in string) []map[string]string {
+	t.Helper()
+	records, err := csv.NewReader(strings.NewReader(in)).ReadAll()
+	if err != nil {
+		t.Fatalf("parsing csv: %v\n%s", err, in)
+	}
+	if len(records) < 2 {
+		t.Fatalf("csv has %d records, want a header and at least one row", len(records))
+	}
+
+	header := records[0]
+	out := make([]map[string]string, 0, len(records)-1)
+	for _, rec := range records[1:] {
+		row := make(map[string]string, len(header))
+		for i, col := range header {
+			row[col] = rec[i]
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // A nil field means "not measured" and must render as a dash-free absence in the

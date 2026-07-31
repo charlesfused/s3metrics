@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/charlesfused/s3metrics/internal/errs"
 	"github.com/charlesfused/s3metrics/internal/progress"
 )
 
@@ -90,7 +91,10 @@ func (s currentSource) listLevel(ctx context.Context, bucket, prefix string,
 		}
 		rep.AddObjects(int64(len(out.Contents)))
 
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
+		switch next, err := moreObjects(out); {
+		case err != nil:
+			return nil, Aggregate{}, err
+		case !next:
 			return prefixes, loose, nil
 		}
 		token = out.NextContinuationToken
@@ -120,7 +124,10 @@ func (s currentSource) walkPrefix(ctx context.Context, bucket, prefix string,
 		}
 		rep.AddObjects(int64(len(out.Contents)))
 
-		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
+		switch next, err := moreObjects(out); {
+		case err != nil:
+			return Aggregate{}, err
+		case !next:
 			return agg, nil
 		}
 		token = out.NextContinuationToken
@@ -162,7 +169,10 @@ func (s versionSource) listLevel(ctx context.Context, bucket, prefix string,
 		}
 		rep.AddObjects(addPage(&loose, out))
 
-		if !more(out) {
+		switch next, err := moreVersions(out); {
+		case err != nil:
+			return nil, Aggregate{}, err
+		case !next:
 			return prefixes, loose, nil
 		}
 		keyMark, verMark = out.NextKeyMarker, out.NextVersionIdMarker
@@ -189,7 +199,10 @@ func (s versionSource) walkPrefix(ctx context.Context, bucket, prefix string,
 
 		rep.AddObjects(addPage(&agg, out))
 
-		if !more(out) {
+		switch next, err := moreVersions(out); {
+		case err != nil:
+			return Aggregate{}, err
+		case !next:
 			return agg, nil
 		}
 		keyMark, verMark = out.NextKeyMarker, out.NextVersionIdMarker
@@ -204,7 +217,14 @@ func (s versionSource) walkPrefix(ctx context.Context, bucket, prefix string,
 // than byte totals do.
 func addPage(agg *Aggregate, out *s3.ListObjectVersionsOutput) int64 {
 	for _, v := range out.Versions {
-		agg.AddVersion(aws.ToInt64(v.Size), versionClassOf(v), aws.ToBool(v.IsLatest))
+		// Deliberately not aws.ToBool: that maps a nil to false, which here
+		// would mean "noncurrent" and invent a tally out of a field S3 never
+		// sent. Only an explicit false makes a version noncurrent. Real S3
+		// always populates IsLatest, so this is about what happens when it
+		// does not — and the honest answer is to leave an unknown uncounted
+		// rather than inflate an advisory number.
+		latest := v.IsLatest == nil || *v.IsLatest
+		agg.AddVersion(aws.ToInt64(v.Size), versionClassOf(v), latest)
 	}
 	for range out.DeleteMarkers {
 		agg.AddDeleteMarker()
@@ -212,7 +232,21 @@ func addPage(agg *Aggregate, out *s3.ListObjectVersionsOutput) int64 {
 	return int64(len(out.Versions) + len(out.DeleteMarkers))
 }
 
-// more reports whether another page is waiting.
+// truncatedNoMarker is what a listing that cannot be resumed looks like: more
+// pages are promised and none is named.
+//
+// It is returned as an error rather than treated as the end of the listing,
+// because stopping quietly would hand back a short aggregate with a nil error —
+// a wrong total presented as a complete one. That is the worst outcome this tool
+// has, and it is the one a user cannot detect.
+func truncatedNoMarker(op, marker string) error {
+	return errs.New(errs.CodeInternal,
+		"S3 reported a truncated "+op+" response with no "+marker,
+		"this should not happen against S3 itself — retry, and check any proxy or "+
+			"S3-compatible endpoint in front of it")
+}
+
+// moreVersions reports whether another page of versions is waiting.
 //
 // Both markers are carried forward by the callers, never just the key. A key
 // with more versions than fit in one page is resumed mid-key, and the version
@@ -220,7 +254,24 @@ func addPage(agg *Aggregate, out *s3.ListObjectVersionsOutput) int64 {
 // repeated or skipped, with no error to notice.
 //
 // NextVersionIdMarker is allowed to be nil while NextKeyMarker is set (the page
-// broke on a common prefix), which is why only the key marker is checked here.
-func more(out *s3.ListObjectVersionsOutput) bool {
-	return aws.ToBool(out.IsTruncated) && out.NextKeyMarker != nil
+// broke on a common prefix), which is why only the key marker is required here.
+func moreVersions(out *s3.ListObjectVersionsOutput) (bool, error) {
+	if !aws.ToBool(out.IsTruncated) {
+		return false, nil
+	}
+	if out.NextKeyMarker == nil {
+		return false, truncatedNoMarker("ListObjectVersions", "NextKeyMarker")
+	}
+	return true, nil
+}
+
+// moreObjects is moreVersions' counterpart for the current-only listing.
+func moreObjects(out *s3.ListObjectsV2Output) (bool, error) {
+	if !aws.ToBool(out.IsTruncated) {
+		return false, nil
+	}
+	if out.NextContinuationToken == nil {
+		return false, truncatedNoMarker("ListObjectsV2", "NextContinuationToken")
+	}
+	return true, nil
 }
