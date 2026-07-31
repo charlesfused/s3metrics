@@ -156,6 +156,10 @@ With `--format json`, errors are written to stderr as `{"error":{"code":…,"mes
 
 ## Development
 
+Cutting a release is documented in [RELEASING.md](RELEASING.md) — including the
+naming contract between `.goreleaser.yaml` and the self-updater, which breaks
+`--self-update` silently if the two ever disagree.
+
 ```bash
 make test    # go test ./...
 make race    # go test -race ./...
