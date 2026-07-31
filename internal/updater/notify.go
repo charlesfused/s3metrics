@@ -45,12 +45,13 @@ func CachePath() (string, error) {
 func StartBackgroundCheck(c *Client, enabled bool) <-chan string {
 	ch := make(chan string, 1)
 
-	// A dev or unstamped build has no position in the version ordering, so a
+	// A dev, unstamped, or otherwise unorderable build (e.g. a bare commit SHA
+	// from a repo with no tags) has no position in the version ordering, so a
 	// check could never produce a notice — skip the request entirely rather
-	// than spend rate-limit budget on it. c.IsDev() reads c.Version, not the
-	// package-level buildinfo.Version: the global is always "dev" under
+	// than spend rate-limit budget on it. c.Comparable() reads c.Version, not
+	// the package-level buildinfo.Version: the global is always "dev" under
 	// `go test`, which is what made the original package-level gate untestable.
-	if !enabled || c.IsDev() {
+	if !enabled || !c.Comparable() {
 		close(ch)
 		return ch
 	}

@@ -58,6 +58,16 @@ func (c *Client) SelfUpdate(ctx context.Context) (string, error) {
 			"this is an unstamped development build",
 			"install a released binary, or build with the Makefile so the version is stamped in")
 	}
+	// Comparable subsumes IsDev, but the checks above earn a more specific
+	// message; this one catches everything else that cannot be ordered, such
+	// as a bare commit SHA from a repo with no tags. Gated before the request
+	// for the same reason as IsDev: a lookup could never produce a usable
+	// decision, so there is nothing worth spending it on.
+	if !c.Comparable() {
+		return "", errs.New(errs.CodeUpdateFailed,
+			fmt.Sprintf("this build's version %q cannot be compared against a release", c.Version),
+			"this binary was not built from a tagged commit — install a released binary, or build with the Makefile so the version is stamped in")
+	}
 
 	rel, err := c.Latest(ctx)
 	if err != nil {

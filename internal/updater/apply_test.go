@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charlesfused/s3metrics/internal/errs"
 )
 
 // buildArchive returns a gzipped tar containing a single binary with the given
@@ -289,6 +291,37 @@ func TestSelfUpdateRefusesADevBuildWithoutAskingTheServer(t *testing.T) {
 	c.Version = ""
 	if _, err := c.SelfUpdate(context.Background()); err == nil {
 		t.Error("SelfUpdate() error = nil for an empty version, want a refusal")
+	}
+}
+
+func TestSelfUpdateRefusesAnUncomparableVersionWithoutAskingTheServer(t *testing.T) {
+	// A bare commit SHA (git describe with no tags in the repo) has no position
+	// in the version ordering. Refusing must precede any request, same as the
+	// dev-build gate above, and it must not silently report "already current" —
+	// that is precisely the bug being fixed.
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "62f9f72"
+
+	_, err := c.SelfUpdate(context.Background())
+	if err == nil {
+		t.Fatal("SelfUpdate() error = nil, want a refusal for an uncomparable version")
+	}
+	if !strings.Contains(err.Error(), "62f9f72") {
+		t.Errorf("SelfUpdate() error = %v, want it to name the unusable version", err)
+	}
+	if got := errs.ExitCode(err); got != 11 {
+		t.Errorf("exit code = %d, want 11 (update_failed)", got)
+	}
+	if hits != 0 {
+		t.Errorf("server saw %d requests, want 0 — the gate must precede the lookup", hits)
 	}
 }
 

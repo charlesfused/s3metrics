@@ -118,11 +118,42 @@ func TestIsNewer(t *testing.T) {
 		{"v1.2.0", "", false},
 		{"garbage", "v1.0.0", false},
 		{"v1.0.0", "garbage", false},
+		// A build two commits past a tag (`git describe --tags --dirty` on a
+		// tagged repo) is valid semver as a prerelease, and must order below the
+		// tag itself — the release must be offered as an upgrade, not treated as
+		// current.
+		{"v0.1.1", "v0.1.1-2-g2cff902", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.latest+" vs "+tt.current, func(t *testing.T) {
 			if got := IsNewer(tt.latest, tt.current); got != tt.want {
 				t.Errorf("IsNewer(%q, %q) = %v, want %v", tt.latest, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComparable(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"", false},
+		{"dev", false},
+		{"62f9f72", false},
+		{"0.1.0", true},
+		{"v0.1.1", true},
+		// A real `git describe --tags --dirty` output on a tagged repo two
+		// commits later: valid semver as a prerelease, so it must remain
+		// comparable rather than being mistaken for an opaque SHA.
+		{"v0.1.1-2-g2cff902", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			c := New()
+			c.Version = tt.version
+			if got := c.Comparable(); got != tt.want {
+				t.Errorf("Comparable() for version %q = %v, want %v", tt.version, got, tt.want)
 			}
 		})
 	}

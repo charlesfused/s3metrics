@@ -52,7 +52,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	asJSON := cfg.Format == output.FormatJSON
 
 	if cfg.IsUpdateAction() {
-		if err := runUpdateAction(cfg, stdout); err != nil {
+		if err := runUpdateAction(cfg, updater.New(), stdout); err != nil {
 			errs.Render(stderr, err, asJSON)
 			return errs.ExitCode(err)
 		}
@@ -183,18 +183,19 @@ func newCollector(cfg *cli.Config, awsCfg aws.Config, region string, s3c *s3.Cli
 }
 
 // runUpdateAction handles the three invocations that are about the binary
-// itself rather than about a bucket.
-func runUpdateAction(cfg *cli.Config, stdout io.Writer) error {
+// itself rather than about a bucket. client is passed in rather than built
+// here so a test can point it at an httptest server instead of the real
+// GitHub API.
+func runUpdateAction(cfg *cli.Config, client *updater.Client, stdout io.Writer) error {
 	if cfg.ShowVersion {
 		fmt.Fprintln(stdout, buildinfo.String())
 		return nil
 	}
 
-	client := updater.New()
 	ctx := context.Background()
 
 	if cfg.CheckUpdate {
-		// Gate on the client's own version — the branch below compares against
+		// Gate on the client's own version — the branches below compare against
 		// client.Version, so reading a different source here could disagree
 		// with it.
 		if client.IsDev() {
@@ -204,6 +205,14 @@ func runUpdateAction(cfg *cli.Config, stdout io.Writer) error {
 		rel, err := client.Latest(ctx)
 		if err != nil {
 			return err
+		}
+		if !client.Comparable() {
+			// Not a failure — the lookup succeeded and the answer is that no
+			// ordering is possible, not that something went wrong. Exit 0.
+			fmt.Fprintf(stdout, "cannot compare this build's version %q against the latest release %s\n",
+				client.Version, rel.TagName)
+			fmt.Fprintln(stdout, "  hint: this binary was not built from a tagged commit")
+			return nil
 		}
 		if updater.IsNewer(rel.TagName, client.Version) {
 			fmt.Fprintf(stdout, "a newer version %s is available (running %s)\n", rel.TagName, client.Version)

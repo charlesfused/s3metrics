@@ -156,6 +156,31 @@ func TestBackgroundCheckSkipsDevBuild(t *testing.T) {
 	}
 }
 
+func TestBackgroundCheckSkipsUncomparableVersion(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	// A bare commit SHA has no position in the version ordering, so a check
+	// could never produce a notice — same treatment as a dev build.
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, `{"tag_name":"v9.9.9","assets":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "62f9f72"
+
+	for msg := range StartBackgroundCheck(c, true) {
+		t.Errorf("notice = %q, want silence for an uncomparable version", msg)
+	}
+	if hits != 0 {
+		t.Errorf("server was hit %d times, want 0 — an uncomparable version must not spend rate limit", hits)
+	}
+}
+
 func TestStaleCacheTriggersRefresh(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheDir)

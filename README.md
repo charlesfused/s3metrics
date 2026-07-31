@@ -25,6 +25,20 @@ s3metrics --self-update    # download, verify, and install it
 
 Updates are verified against the SHA256 published in the release's `checksums.txt` before anything replaces the running binary. A mismatch aborts with the installed binary untouched.
 
+A binary built without `make` — or built from a repo with no tags yet, where
+`git describe --tags --always` falls back to a bare commit SHA — has no
+version that can be ordered against a release tag. `--check-update` says so
+plainly and exits `0`, since that's an answer, not a failure:
+
+```
+$ s3metrics --check-update
+cannot compare this build's version "62f9f72" against the latest release v0.1.1
+  hint: this binary was not built from a tagged commit
+```
+
+`--self-update` refuses the same way it refuses an unstamped `dev` build,
+rather than silently reporting "already the latest version".
+
 ## Usage
 
 ```bash

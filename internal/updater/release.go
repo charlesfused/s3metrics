@@ -190,3 +190,15 @@ func AssetName(tag string) string {
 // package-level gate can never be exercised, and every gate written that way so
 // far has shipped untested.
 func (c *Client) IsDev() bool { return c.Version == "" || c.Version == "dev" }
+
+// Comparable reports whether this build's version can be ordered against a
+// release tag. `git describe --tags --always` falls back to a bare commit SHA
+// in a repo with no tags, and a SHA has no position in the version ordering —
+// reporting it as up to date would be a guess dressed as an answer.
+//
+// "dev" and "" are also not valid semver, so Comparable subsumes IsDev; that
+// overlap is intentional. Callers that want the more specific unstamped-build
+// message must still check IsDev first.
+func (c *Client) Comparable() bool {
+	return semver.IsValid(normalizeVersion(c.Version))
+}

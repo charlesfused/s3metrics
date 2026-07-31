@@ -3,11 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/charlesfused/s3metrics/internal/cli"
+	"github.com/charlesfused/s3metrics/internal/errs"
 	"github.com/charlesfused/s3metrics/internal/metrics"
+	"github.com/charlesfused/s3metrics/internal/updater"
 )
 
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
@@ -117,6 +122,78 @@ func TestVersionNote(t *testing.T) {
 				t.Errorf("versionNote() = %q, want it to name the switch that fixes this", got)
 			}
 		})
+	}
+}
+
+// shaStampedClient builds an updater.Client via New() (never &updater.Client{},
+// which nil-panics on HTTP) pointed at a local httptest server, with a version
+// stamped like a locally built binary that was tagged before any release
+// existed: a bare commit SHA that git describe --tags --always falls back to.
+func shaStampedClient(t *testing.T, handler http.HandlerFunc) *updater.Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := updater.New()
+	c.BaseURL = srv.URL
+	c.Repo = "owner/repo"
+	c.Version = "62f9f72"
+	return c
+}
+
+func TestCheckUpdateReportsCannotCompareForASHAStampedBuild(t *testing.T) {
+	client := shaStampedClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"tag_name":"v0.1.1","assets":[]}`)
+	})
+
+	var out bytes.Buffer
+	err := runUpdateAction(&cli.Config{CheckUpdate: true}, client, &out)
+	if err != nil {
+		t.Fatalf("runUpdateAction() error = %v, want nil — cannot-compare is an answer, not a failure", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, `"62f9f72"`) {
+		t.Errorf("stdout = %q, want it to name the build's version", got)
+	}
+	if !strings.Contains(got, "v0.1.1") {
+		t.Errorf("stdout = %q, want it to name the latest release", got)
+	}
+	if !strings.Contains(got, "cannot compare") {
+		t.Errorf("stdout = %q, want it to say the two cannot be compared", got)
+	}
+	if !strings.Contains(got, "tagged commit") {
+		t.Errorf("stdout = %q, want a hint about a build not from a tagged commit", got)
+	}
+	// "is the latest version" would claim an answer the tool cannot back up.
+	if strings.Contains(got, "is the latest version") {
+		t.Errorf("stdout = %q, must not claim to be up to date", got)
+	}
+}
+
+func TestSelfUpdateRefusesASHAStampedBuildWithoutAskingTheServer(t *testing.T) {
+	var hits int
+	client := shaStampedClient(t, func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, `{"tag_name":"v0.1.1","assets":[]}`)
+	})
+
+	var out bytes.Buffer
+	err := runUpdateAction(&cli.Config{SelfUpdate: true}, client, &out)
+	if err == nil {
+		t.Fatal("runUpdateAction() error = nil, want a refusal — reporting 'already the latest' would be the bug")
+	}
+	if !strings.Contains(err.Error(), "62f9f72") {
+		t.Errorf("error = %v, want it to name the unusable version", err)
+	}
+	if got := errs.ExitCode(err); got != 11 {
+		t.Errorf("exit code = %d, want 11 (update_failed)", got)
+	}
+	if hits != 0 {
+		t.Errorf("server saw %d requests, want 0 — the gate must precede the lookup", hits)
+	}
+	if out.String() != "" {
+		t.Errorf("stdout = %q, want it empty when the action fails", out.String())
 	}
 }
 
