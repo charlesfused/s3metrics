@@ -197,6 +197,51 @@ func TestSelfUpdateRefusesASHAStampedBuildWithoutAskingTheServer(t *testing.T) {
 	}
 }
 
+func TestSelfUpdateFailureRendersAsTextEvenWithDefaultJSONFormat(t *testing.T) {
+	// run() computes asJSON from cfg.Format for the report path, but --format
+	// governs report output only — an update action produces no report, and
+	// every one of its successes is unconditional plain text via
+	// fmt.Fprint*. A failure rendered as JSON here would violate
+	// errs.Render's own invariant that failures are shaped like successes.
+	//
+	// buildinfo.Version is always "dev" under `go test` (see IsDev's doc
+	// comment), so this drives the real run() → runUpdateAction → SelfUpdate
+	// path through the real updater.New() client with no network call:
+	// IsDev() refuses before any request is made.
+	stdout, stderr, code := runCLI(t, "--self-update") // default --format is json
+
+	if code != 11 {
+		t.Errorf("exit code = %d, want 11 (update_failed)", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want it empty on failure", stdout)
+	}
+	if strings.HasPrefix(strings.TrimSpace(stderr), "{") {
+		t.Errorf("stderr = %q, want plain text even though --format defaults to json", stderr)
+	}
+	if !strings.Contains(stderr, "s3metrics:") {
+		t.Errorf("stderr = %q, want the plain-text error prefix", stderr)
+	}
+}
+
+func TestCheckUpdateSkipsRequestForADevBuild(t *testing.T) {
+	// buildinfo.Version is always "dev" under `go test`, so this drives
+	// run() → runUpdateAction's --check-update branch through the real
+	// updater.New() client with no network call, pinning that IsDev() is
+	// checked — and returns — before Comparable() is ever reached.
+	stdout, stderr, code := runCLI(t, "--check-update")
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want it empty", stderr)
+	}
+	if !strings.Contains(stdout, "unstamped development build") {
+		t.Errorf("stdout = %q, want the unstamped-build message", stdout)
+	}
+}
+
 func TestErrorOutputIsValidJSONWhenRequested(t *testing.T) {
 	// The SDK is pointed at a closed local port, so the failure path runs to
 	// completion with no outbound traffic and no dependence on what AWS would

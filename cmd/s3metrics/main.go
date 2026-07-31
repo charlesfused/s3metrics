@@ -53,7 +53,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if cfg.IsUpdateAction() {
 		if err := runUpdateAction(cfg, updater.New(), stdout); err != nil {
-			errs.Render(stderr, err, asJSON)
+			// Update actions produce no report, so --format does not apply to
+			// them — and their successes are always plain text. Rendering their
+			// failures as JSON would break the invariant errs.Render exists to
+			// uphold: failures are structured the same way successes are.
+			errs.Render(stderr, err, false)
 			return errs.ExitCode(err)
 		}
 		return 0
