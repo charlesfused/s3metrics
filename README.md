@@ -2,6 +2,12 @@
 
 Report size and object-count metrics for an S3 bucket. Single Go binary, no runtime dependencies, updates itself.
 
+## Releases
+
+Built binaries for linux, macOS, and Windows (amd64 and arm64) are attached to every
+[release](https://github.com/charlesfused/s3metrics/releases), together with a
+`checksums.txt` that `--self-update` verifies before replacing anything.
+
 ## Install
 
 Download a release archive for your platform from the [releases page](https://github.com/charlesfused/s3metrics/releases), or build from source:
