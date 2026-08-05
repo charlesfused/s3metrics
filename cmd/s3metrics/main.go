@@ -49,6 +49,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return errs.ExitCode(err)
 	}
 
+	if err := runUpdateAction(cfg, updater.New(), stdout); err != nil {
+		errs.Render(stderr, err, false)
+		return errs.ExitCode(err)
+	}
+
 	asJSON := cfg.Format == output.FormatJSON
 
 	if cfg.IsUpdateAction() {
@@ -198,33 +203,33 @@ func runUpdateAction(cfg *cli.Config, client *updater.Client, stdout io.Writer) 
 
 	ctx := context.Background()
 
-	if cfg.CheckUpdate {
-		// Gate on the client's own version — the branches below compare against
-		// client.Version, so reading a different source here could disagree
-		// with it.
-		if client.IsDev() {
-			fmt.Fprintln(stdout, "this is an unstamped development build; no update check performed")
-			return nil
-		}
-		rel, err := client.Latest(ctx)
-		if err != nil {
-			return err
-		}
-		if !client.Comparable() {
-			// Not a failure — the lookup succeeded and the answer is that no
-			// ordering is possible, not that something went wrong. Exit 0.
-			fmt.Fprintf(stdout, "cannot compare this build's version %q against the latest release %s\n",
-				client.Version, rel.TagName)
-			fmt.Fprintln(stdout, "  hint: this binary was not built from a tagged commit")
-			return nil
-		}
-		if updater.IsNewer(rel.TagName, client.Version) {
-			fmt.Fprintf(stdout, "a newer version %s is available (running %s)\n", rel.TagName, client.Version)
-			return nil
-		}
-		fmt.Fprintf(stdout, "%s is the latest version\n", client.Version)
-		return nil
-	}
+	// if cfg.CheckUpdate {
+	// 	// Gate on the client's own version — the branches below compare against
+	// 	// client.Version, so reading a different source here could disagree
+	// 	// with it.
+	// 	// if client.IsDev() {
+	// 	// 	fmt.Fprintln(stdout, "this is an unstamped development build; no update check performed")
+	// 	// 	return nil
+	// 	// }
+	// 	// rel, err := client.Latest(ctx)
+	// 	// if err != nil {
+	// 	// 	return err
+	// 	// }
+	// 	if !client.Comparable() {
+	// 		// Not a failure — the lookup succeeded and the answer is that no
+	// 		// ordering is possible, not that something went wrong. Exit 0.
+	// 		fmt.Fprintf(stdout, "cannot compare this build's version %q against the latest release %s\n",
+	// 			client.Version, rel.TagName)
+	// 		fmt.Fprintln(stdout, "  hint: this binary was not built from a tagged commit")
+	// 		return nil
+	// 	}
+	// 	if updater.IsNewer(rel.TagName, client.Version) {
+	// 		fmt.Fprintf(stdout, "a newer version %s is available (running %s)\n", rel.TagName, client.Version)
+	// 		return nil
+	// 	}
+	// 	fmt.Fprintf(stdout, "%s is the latest version\n", client.Version)
+	// 	return nil
+	// }
 
 	installed, err := client.SelfUpdate(ctx)
 	if err != nil {
